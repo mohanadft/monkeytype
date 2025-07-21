@@ -10,6 +10,7 @@ button,
   .far,
   .fab {
     line-height: 1.25;
+    pointer-events: none;
   }
   &.fullWidth {
     width: 100%;
@@ -84,7 +85,7 @@ input[type="submit"] {
     outline: none;
   }
   &:focus-visible {
-    box-shadow: 0 0 0 0.1em var(--bg-color), 0 0 0 0.2em var(--text-color);
+    box-shadow: 0 0 0 0.1rem var(--bg-color), 0 0 0 0.2rem var(--text-color);
     outline: none;
   }
   &:active {
@@ -154,11 +155,19 @@ button.text,
     outline: none;
   }
   &:focus-visible {
-    box-shadow: 0 0 0 0.1em var(--text-color);
+    box-shadow: 0 0 0 0.1rem var(--text-color);
     outline: none;
   }
   &:active {
     color: var(--sub-color);
     background: none;
+  }
+}
+
+a.textButton,
+a.text,
+a.button {
+  &:focus-visible {
+    border-radius: var(--roundness);
   }
 }

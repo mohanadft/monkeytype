@@ -1,13 +1,14 @@
 import * as UpdateConfig from "../../config";
 import * as TestLogic from "../../test/test-logic";
+import { Command } from "../types";
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeTimeConfig",
     display: "Time...",
     icon: "fa-clock",
     subgroup: {
-      title: "Change time config...",
+      title: "Time...",
       configKey: "time",
       list: [
         {
@@ -54,8 +55,8 @@ const commands: MonkeyTypes.Command[] = [
           id: "changeTimeConfigCustom",
           display: "custom...",
           input: true,
-          exec: (input): void => {
-            if (!input) return;
+          exec: ({ input }): void => {
+            if (input === undefined || input === "") return;
             UpdateConfig.setMode("time");
             UpdateConfig.setTimeConfig(parseInt(input));
             TestLogic.restart();

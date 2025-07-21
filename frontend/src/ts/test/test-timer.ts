@@ -4,12 +4,11 @@
 import Config, * as UpdateConfig from "../config";
 import * as CustomText from "./custom-text";
 import * as TimerProgress from "./timer-progress";
-import * as LiveWpm from "./live-wpm";
+import * as LiveWpm from "./live-speed";
 import * as TestStats from "./test-stats";
 import * as TestInput from "./test-input";
-import * as TestWords from "./test-words";
 import * as Monkey from "./monkey";
-import * as Misc from "../utils/misc";
+import * as Numbers from "@monkeytype/util/numbers";
 import * as Notifications from "../elements/notifications";
 import * as Caret from "./caret";
 import * as SlowTimer from "../states/slow-timer";
@@ -17,6 +16,14 @@ import * as TestState from "./test-state";
 import * as Time from "../states/time";
 import * as TimerEvent from "../observables/timer-event";
 import * as LayoutfluidFunboxTimer from "../test/funbox/layoutfluid-funbox-timer";
+import { KeymapLayout, Layout } from "@monkeytype/contracts/schemas/configs";
+
+type TimerStats = {
+  dateNow: number;
+  now: number;
+  expected: number;
+  nextDelay: number;
+};
 
 let slowTimerCount = 0;
 let timer: NodeJS.Timeout | null = null;
@@ -47,14 +54,14 @@ function updateTimer(): void {
   if (timerDebug) console.time("timer progress update");
   if (
     Config.mode === "time" ||
-    (Config.mode === "custom" && CustomText.isTimeRandom)
+    (Config.mode === "custom" && CustomText.getLimitMode() === "time")
   ) {
     TimerProgress.update();
   }
   if (timerDebug) console.timeEnd("timer progress update");
 }
 
-function calculateWpmRaw(): MonkeyTypes.WpmAndRaw {
+function calculateWpmRaw(): { wpm: number; raw: number } {
   if (timerDebug) console.time("calculate wpm and raw");
   const wpmAndRaw = TestStats.calculateWpmAndRaw();
   if (timerDebug) console.timeEnd("calculate wpm and raw");
@@ -68,7 +75,7 @@ function calculateWpmRaw(): MonkeyTypes.WpmAndRaw {
   return wpmAndRaw;
 }
 
-function monkey(wpmAndRaw: MonkeyTypes.WpmAndRaw): void {
+function monkey(wpmAndRaw: { wpm: number; raw: number }): void {
   if (timerDebug) console.time("update monkey");
   const num = Config.blindMode ? wpmAndRaw.raw : wpmAndRaw.wpm;
   Monkey.updateFastOpacity(num);
@@ -77,20 +84,15 @@ function monkey(wpmAndRaw: MonkeyTypes.WpmAndRaw): void {
 
 function calculateAcc(): number {
   if (timerDebug) console.time("calculate acc");
-  const acc = Misc.roundTo2(TestStats.calculateAccuracy());
+  const acc = Numbers.roundTo2(TestStats.calculateAccuracy());
   if (timerDebug) console.timeEnd("calculate acc");
   return acc;
 }
 
 function layoutfluid(): void {
   if (timerDebug) console.time("layoutfluid");
-  if (
-    Config.funbox.split("#").includes("layoutfluid") &&
-    Config.mode === "time"
-  ) {
-    const layouts = Config.customLayoutfluid
-      ? Config.customLayoutfluid.split("#")
-      : ["qwerty", "dvorak", "colemak"];
+  if (Config.funbox.includes("layoutfluid") && Config.mode === "time") {
+    const layouts = Config.customLayoutfluid;
     const switchTime = Config.time / layouts.length;
     const time = Time.get();
     const index = Math.floor(time / switchTime);
@@ -103,23 +105,26 @@ function layoutfluid(): void {
 
     if (flooredSwitchTimes.includes(time + 3)) {
       LayoutfluidFunboxTimer.show();
-      LayoutfluidFunboxTimer.updateTime(3, layouts[index + 1]);
+      LayoutfluidFunboxTimer.updateTime(3, layouts[index + 1] as string);
     } else if (flooredSwitchTimes.includes(time + 2)) {
-      LayoutfluidFunboxTimer.updateTime(2, layouts[index + 1]);
+      LayoutfluidFunboxTimer.updateTime(2, layouts[index + 1] as string);
     } else if (flooredSwitchTimes.includes(time + 1)) {
-      LayoutfluidFunboxTimer.updateTime(1, layouts[index + 1]);
+      LayoutfluidFunboxTimer.updateTime(1, layouts[index + 1] as string);
     }
 
     if (Config.layout !== layout && layout !== undefined) {
       LayoutfluidFunboxTimer.hide();
-      UpdateConfig.setLayout(layout, true);
-      UpdateConfig.setKeymapLayout(layout, true);
+      UpdateConfig.setLayout(layout as Layout, true);
+      UpdateConfig.setKeymapLayout(layout as KeymapLayout, true);
     }
   }
   if (timerDebug) console.timeEnd("layoutfluid");
 }
 
-function checkIfFailed(wpmAndRaw: MonkeyTypes.WpmAndRaw, acc: number): void {
+function checkIfFailed(
+  wpmAndRaw: { wpm: number; raw: number },
+  acc: number
+): boolean {
   if (timerDebug) console.time("fail conditions");
   TestInput.pushKeypressesToHistory();
   TestInput.pushErrorToHistory();
@@ -127,57 +132,54 @@ function checkIfFailed(wpmAndRaw: MonkeyTypes.WpmAndRaw, acc: number): void {
   if (
     Config.minWpm === "custom" &&
     wpmAndRaw.wpm < Config.minWpmCustomSpeed &&
-    TestWords.words.currentIndex > 3
+    TestState.activeWordIndex > 3
   ) {
     if (timer !== null) clearTimeout(timer);
     SlowTimer.clear();
     slowTimerCount = 0;
     TimerEvent.dispatch("fail", "min speed");
-    return;
+    return true;
   }
   if (Config.minAcc === "custom" && acc < Config.minAccCustom) {
     if (timer !== null) clearTimeout(timer);
     SlowTimer.clear();
     slowTimerCount = 0;
     TimerEvent.dispatch("fail", "min accuracy");
-    return;
+    return true;
   }
   if (timerDebug) console.timeEnd("fail conditions");
+  return false;
 }
 
 function checkIfTimeIsUp(): void {
   if (timerDebug) console.time("times up check");
-  if (
-    Config.mode === "time" ||
-    (Config.mode === "custom" && CustomText.isTimeRandom)
-  ) {
-    if (
-      (Time.get() >= Config.time &&
-        Config.time !== 0 &&
-        Config.mode === "time") ||
-      (Time.get() >= CustomText.time &&
-        CustomText.time !== 0 &&
-        Config.mode === "custom")
-    ) {
-      //times up
-      if (timer !== null) clearTimeout(timer);
-      Caret.hide();
-      TestInput.input.pushHistory();
-      TestInput.corrected.pushHistory();
-      SlowTimer.clear();
-      slowTimerCount = 0;
-      TimerEvent.dispatch("finish");
-      return;
-    }
+  let maxTime = undefined;
+
+  if (Config.mode === "time") {
+    maxTime = Config.time;
+  } else if (Config.mode === "custom" && CustomText.getLimitMode() === "time") {
+    maxTime = CustomText.getLimitValue();
   }
+  if (maxTime !== undefined && maxTime !== 0 && Time.get() >= maxTime) {
+    //times up
+    if (timer !== null) clearTimeout(timer);
+    Caret.hide();
+    TestInput.input.pushHistory();
+    TestInput.corrected.pushHistory();
+    SlowTimer.clear();
+    slowTimerCount = 0;
+    TimerEvent.dispatch("finish");
+    return;
+  }
+
   if (timerDebug) console.timeEnd("times up check");
 }
 
 // ---------------------------------------
 
-let timerStats: MonkeyTypes.TimerStats[] = [];
+let timerStats: TimerStats[] = [];
 
-export function getTimerStats(): MonkeyTypes.TimerStats[] {
+export function getTimerStats(): TimerStats[] {
   return timerStats;
 }
 
@@ -190,8 +192,8 @@ async function timerStep(): Promise<void> {
   const acc = calculateAcc();
   monkey(wpmAndRaw);
   layoutfluid();
-  checkIfFailed(wpmAndRaw, acc);
-  checkIfTimeIsUp();
+  const failed = checkIfFailed(wpmAndRaw, acc);
+  if (!failed) checkIfTimeIsUp();
   if (timerDebug) console.timeEnd("timer step -----------------------------");
 }
 
@@ -244,7 +246,7 @@ export async function start(): Promise<void> {
         return;
       }
 
-      timerStep();
+      void timerStep();
 
       expected += interval;
       loop();

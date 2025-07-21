@@ -11,7 +11,7 @@ let analytics: AnalyticsType;
 
 export async function log(
   eventName: string,
-  params?: { [key: string]: string }
+  params?: Record<string, string>
 ): Promise<void> {
   try {
     logEvent(analytics, eventName, params);
@@ -20,24 +20,12 @@ export async function log(
   }
 }
 
-const lsString = localStorage.getItem("acceptedCookies");
-let acceptedCookies: {
-  security: boolean;
-  analytics: boolean;
-} | null;
-if (lsString) {
-  acceptedCookies = JSON.parse(lsString);
-} else {
-  acceptedCookies = null;
-}
-
-if (acceptedCookies !== null) {
-  if (acceptedCookies["analytics"] === true) {
-    activateAnalytics();
-  }
-}
-
 export function activateAnalytics(): void {
+  if (analytics !== undefined) {
+    console.warn("Analytics already activated");
+    return;
+  }
+  console.log("Activating Analytics");
   try {
     analytics = getAnalytics(firebaseApp);
     setAnalyticsCollectionEnabled(analytics, true);

@@ -1,19 +1,37 @@
+import { KeymapLayout } from "@monkeytype/contracts/schemas/configs";
 import * as UpdateConfig from "../../config";
+import { LayoutsList } from "../../constants/layouts";
 import * as TestLogic from "../../test/test-logic";
-import { capitalizeFirstLetterOfEachWord } from "../../utils/misc";
+import { capitalizeFirstLetterOfEachWord } from "../../utils/strings";
+import { Command, CommandsSubgroup } from "../types";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
-  title: "Change keymap layout...",
+const subgroup: CommandsSubgroup = {
+  title: "Keymap layout...",
   configKey: "keymapLayout",
   list: [
     {
-      id: "couldnotload",
-      display: "Could not load the layouts list :(",
+      id: "changeKeymapLayoutOverrideSync",
+      display: "emulator sync",
+      configValue: "overrideSync",
+      alias: "default",
+      exec: (): void => {
+        UpdateConfig.setKeymapLayout("overrideSync");
+        TestLogic.restart();
+      },
     },
+    ...LayoutsList.map((layout) => ({
+      id: "changeKeymapLayout" + capitalizeFirstLetterOfEachWord(layout),
+      display: layout.replace(/_/g, " "),
+      configValue: layout,
+      exec: (): void => {
+        UpdateConfig.setKeymapLayout(layout as KeymapLayout);
+        TestLogic.restart();
+      },
+    })),
   ],
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeKeymapLayout",
     display: "Keymap layout...",
@@ -23,32 +41,4 @@ const commands: MonkeyTypes.Command[] = [
   },
 ];
 
-function update(layouts: MonkeyTypes.Layouts): void {
-  subgroup.list = [];
-  subgroup.list.push({
-    id: "changeKeymapLayoutOverrideSync",
-    display: "emulator sync",
-    configValue: "overrideSync",
-    alias: "default",
-    exec: (): void => {
-      UpdateConfig.setKeymapLayout("overrideSync");
-      TestLogic.restart();
-    },
-  });
-  Object.keys(layouts).forEach((layout) => {
-    if (layout.toString() != "default") {
-      subgroup.list.push({
-        id: "changeKeymapLayout" + capitalizeFirstLetterOfEachWord(layout),
-        display: layout.replace(/_/g, " "),
-        configValue: layout,
-        exec: (): void => {
-          UpdateConfig.setKeymapLayout(layout);
-          TestLogic.restart();
-        },
-      });
-    }
-  });
-}
-
 export default commands;
-export { update };

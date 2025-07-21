@@ -1,4 +1,7 @@
-//@ts-nocheck
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+// oxlint-disable ban-ts-comment
+//@ts-nocheck too many errors from 3rd party ad code
 
 import Config from "../config";
 import * as ActivePage from "../states/active-page";
@@ -143,8 +146,11 @@ export function init(): void {
   headOfDocument.appendChild(rampScript);
 
   window._pwGA4PageviewId = "".concat(Date.now());
+  // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions, @typescript-eslint/no-unsafe-assignment
   window.dataLayer = window.dataLayer || [];
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   window.gtag =
+    // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions
     window.gtag ||
     function (): void {
       // eslint-disable-next-line prefer-rest-params
@@ -154,6 +160,7 @@ export function init(): void {
   gtag("config", "G-KETCPNHRJF", { send_page_view: false });
   gtag("event", "ramp_js", {
     send_to: "G-KETCPNHRJF",
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     pageview_id: window._pwGA4PageviewId,
   });
 }

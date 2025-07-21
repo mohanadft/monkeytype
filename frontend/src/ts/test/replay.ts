@@ -1,6 +1,7 @@
 import config from "../config";
 import * as Sound from "../controllers/sound-controller";
 import * as TestInput from "./test-input";
+import * as Arrays from "../utils/arrays";
 
 type ReplayAction =
   | "correctLetter"
@@ -10,11 +11,11 @@ type ReplayAction =
   | "submitErrorWord"
   | "setLetterIndex";
 
-interface Replay {
+type Replay = {
   action: ReplayAction;
   value?: string | number;
   time: number;
-}
+};
 
 let wordsList: string[] = [];
 let replayData: Replay[] = [];
@@ -51,14 +52,14 @@ function initializeReplayPrompt(): void {
       wordCount++;
     }
   });
-  wordsList.forEach((item, i) => {
+  wordsList.forEach((word, i) => {
     if (i > wordCount) return;
     const x = document.createElement("div");
     x.className = "word";
-    for (i = 0; i < item.length; i++) {
-      const letter = document.createElement("letter");
-      letter.innerHTML = item[i];
-      x.appendChild(letter);
+    for (const letter of word) {
+      const elem = document.createElement("letter");
+      elem.innerHTML = letter;
+      x.appendChild(elem);
     }
     replayWordsElement.appendChild(x);
   });
@@ -87,13 +88,13 @@ export function pauseReplay(): void {
 
 function playSound(error = false): void {
   if (error) {
-    if (config.playSoundOnError) {
-      Sound.playError();
+    if (config.playSoundOnError !== "off") {
+      void Sound.playError();
     } else {
-      Sound.playClick();
+      void Sound.playClick();
     }
   } else {
-    Sound.playClick();
+    void Sound.playClick();
   }
 }
 
@@ -148,10 +149,11 @@ function handleDisplayLogic(item: Replay, nosound = false): void {
 
     const replayWords = document.getElementById("replayWords");
 
-    if (replayWords !== null) activeWord = replayWords.children[wordPos];
+    if (replayWords !== null)
+      activeWord = replayWords.children[wordPos] as HTMLElement;
 
     curPos = activeWord.children.length;
-    while (activeWord.children[curPos - 1].className === "") curPos--;
+    while (activeWord.children[curPos - 1]?.className === "") curPos--;
     activeWord?.classList.remove("error");
   }
 }
@@ -170,7 +172,14 @@ function loadOldReplay(): number {
       startingIndex = i + 1;
     }
   });
-  const time = Math.floor(replayData[startingIndex].time / 1000);
+
+  const datatime = replayData[startingIndex]?.time;
+
+  if (datatime === undefined) {
+    throw new Error("Failed to load old replay: datatime is undefined");
+  }
+
+  const time = Math.floor(datatime / 1000);
   updateStatsString(time);
 
   return startingIndex;
@@ -198,7 +207,7 @@ function toggleReplayDisplay(): void {
   } else {
     //hide
     if (
-      (toggleButton?.parentNode as Element)?.getAttribute("aria-label") !=
+      (toggleButton?.parentNode as Element)?.getAttribute("aria-label") !==
       "Start replay"
     ) {
       pauseReplay();
@@ -254,9 +263,16 @@ function playReplay(): void {
   );
   initializeReplayPrompt();
   const startingIndex = loadOldReplay();
-  const lastTime = replayData[startingIndex].time;
+  const lastTime = replayData[startingIndex]?.time;
+
+  if (lastTime === undefined) {
+    throw new Error("Failed to play replay: lastTime is undefined");
+  }
+
   let swTime = Math.round(lastTime / 1000); //starting time
-  const swEndTime = Math.round(replayData[replayData.length - 1].time / 1000);
+  const swEndTime = Math.round(
+    (Arrays.lastElementFromArray(replayData) as Replay).time / 1000
+  );
   while (swTime <= swEndTime) {
     const time = swTime;
     stopwatchList.push(
@@ -284,7 +300,7 @@ function playReplay(): void {
         "aria-label",
         "Start replay"
       );
-    }, replayData[replayData.length - 1].time - lastTime)
+    }, (Arrays.lastElementFromArray(replayData) as Replay).time - lastTime)
   );
 }
 
@@ -309,9 +325,11 @@ $("#replayWords").on("click", "letter", (event) => {
   const replayWords = document.querySelector("#replayWords");
 
   const words = [...(replayWords?.children ?? [])];
-  targetWordPos = words.indexOf(event.target.parentNode);
-  const letters = [...words[targetWordPos].children];
-  targetCurPos = letters.indexOf(event.target);
+  targetWordPos = words.indexOf(
+    (event.target as HTMLElement).parentNode as HTMLElement
+  );
+  const letters = [...(words[targetWordPos] as HTMLElement).children];
+  targetCurPos = letters.indexOf(event.target as HTMLElement);
 
   initializeReplayPrompt();
   loadOldReplay();

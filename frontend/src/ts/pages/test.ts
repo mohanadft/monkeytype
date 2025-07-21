@@ -1,38 +1,39 @@
 import * as TestStats from "../test/test-stats";
-import * as TestUI from "../test/test-ui";
 import * as ManualRestart from "../test/manual-restart-tracker";
 import * as TestLogic from "../test/test-logic";
 import * as Funbox from "../test/funbox/funbox";
 import Page from "./page";
-import { updateTestPageAds } from "../controllers/ad-controller";
+import { updateFooterAndVerticalAds } from "../controllers/ad-controller";
 import * as ModesNotice from "../elements/modes-notice";
 import * as Keymap from "../elements/keymap";
+import * as TestConfig from "../test/test-config";
+import * as ScrollToTop from "../elements/scroll-to-top";
 
-export const page = new Page(
-  "test",
-  $(".page.pageTest"),
-  "/",
-  async () => {
-    ManualRestart.set();
-    TestLogic.restart();
-    Funbox.clear();
-    ModesNotice.update();
+export const page = new Page({
+  id: "test",
+  element: $(".page.pageTest"),
+  path: "/",
+  beforeHide: async (): Promise<void> => {
     $("#wordsInput").trigger("focusout");
   },
-  async () => {
-    updateTestPageAds(true);
+  afterHide: async (): Promise<void> => {
+    ManualRestart.set();
+    TestLogic.restart({
+      noAnim: true,
+    });
+    void Funbox.clear();
+    void ModesNotice.update();
+    updateFooterAndVerticalAds(true);
   },
-  async () => {
-    updateTestPageAds(false);
+  beforeShow: async (): Promise<void> => {
+    updateFooterAndVerticalAds(false);
     TestStats.resetIncomplete();
     ManualRestart.set();
     TestLogic.restart({
       noAnim: true,
     });
-    Funbox.activate();
-    Keymap.refresh();
+    void TestConfig.instantUpdate();
+    void Keymap.refresh();
+    ScrollToTop.hide();
   },
-  async () => {
-    TestUI.focusWords();
-  }
-);
+});

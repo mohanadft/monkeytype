@@ -1,30 +1,45 @@
 .pageSettings {
-  display: flex;
-  flex-direction: column;
   gap: 2rem;
+
+  .accountSettingsNotice {
+    background: var(--bg-color);
+    border-radius: var(--roundness);
+    box-shadow: 0 0 0 0.2rem var(--sub-alt-color);
+    // background: color-mix(in srgb, var(--sub-alt-color) 50%, transparent);
+    // background: var(--sub-alt-color);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    .icon {
+      font-size: 2rem;
+      margin-left: 1rem;
+      margin-right: 1rem;
+      color: var(--sub-color);
+    }
+    button {
+      padding: 1rem;
+    }
+  }
 
   .tip {
     color: var(--sub-color);
+    text-align: center;
   }
 
   .sectionGroupTitle {
     font-size: 2rem;
-    color: var(--sub-color);
-    line-height: 2rem;
-    cursor: pointer;
-    transition: 0.25s;
-    display: flex;
-    align-items: baseline;
-    &:hover {
-      color: var(--text-color);
-    }
+    width: max-content;
+    margin: -0.25em;
+    padding: 0.25em;
 
     .fas {
-      margin-right: 0.5em;
+      transition: transform 0.25s;
+    }
 
-      &.rotate {
-        transform: rotate(-90deg);
-      }
+    &.rotateIcon .fas {
+      transform: rotate(-90deg);
     }
   }
 
@@ -35,10 +50,28 @@
   .settingsGroup {
     display: grid;
     gap: 2rem;
-    &.quickNav .links {
-      display: grid;
-      grid-auto-flow: column;
-      text-align: center;
+    &.quickNav {
+      justify-content: center;
+      .links {
+        font-size: 0.75rem;
+        background: var(--sub-alt-color);
+        border-radius: var(--roundness);
+        max-width: fit-content;
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        text-align: center;
+        a:first-child {
+          padding-left: 2em;
+        }
+        a:last-child {
+          padding-right: 2em;
+        }
+        a {
+          padding: 1em;
+          flex-grow: 1;
+        }
+      }
     }
   }
 
@@ -60,6 +93,10 @@
       gap: 0.5rem;
       margin-bottom: 0.5rem;
 
+      span {
+        display: flex;
+        gap: 0.5rem;
+      }
       .button {
         height: auto;
 
@@ -69,7 +106,13 @@
       }
     }
 
-    &.autoSwitchThemeInputs {
+    .rangeGroup {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+    }
+
+    &[data-config-name="autoSwitchThemeInputs"] {
       grid-template-areas: unset;
       grid-template-columns: 1fr 3fr 1fr 3fr;
       gap: 2rem;
@@ -87,7 +130,7 @@
       }
     }
 
-    &.customBackgroundFilter {
+    &[data-config-name="customBackgroundFilter"] {
       .groups {
         grid-area: buttons;
         display: grid;
@@ -220,30 +263,9 @@
       }
     }
 
-    &.discordIntegration {
-      .info {
-        grid-area: buttons;
-        text-align: center;
-        color: var(--main-color);
-      }
-
-      #discordButtonGroup {
-        display: grid;
-        grid-auto-flow: column;
-        justify-content: center;
-        gap: 0.5rem;
-      }
-
-      #unlinkDiscordButton,
-      #updateDiscordAvatarButton {
-        margin: 0.5rem auto 0 auto;
-        font-size: 0.75rem;
-        line-height: 0.7rem;
-      }
-
-      .howto {
-        margin-top: 1rem;
-        color: var(--text-color);
+    &[data-config-name="paceCaret"] {
+      .buttons {
+        grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
       }
     }
 
@@ -280,7 +302,6 @@
 
           &.customTheme {
             grid-template-columns: 1fr;
-            margin-top: 1rem;
             .colorText {
               color: var(--text-color);
             }
@@ -410,7 +431,7 @@
         margin-left: 0;
         grid-auto-flow: dense;
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)) !important;
+        grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)) !important;
         gap: 0.5rem;
         .button {
           transition: transform 0.125s;
@@ -455,6 +476,39 @@
         grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
         gap: 0.5rem;
       }
+    }
+
+    &.passwordAuthSettings {
+      .buttons {
+        grid-template-rows: repeat(auto-fill, 1fr);
+        grid-template-columns: repeat(2, minmax(4.5rem, 1fr));
+
+        #removePasswordAuth,
+        #addPasswordAuth {
+          grid-column: span 2;
+        }
+      }
+    }
+
+    &.highlight {
+      margin: -1em;
+      padding: 1em;
+      animation: flashBorder 4s ease-in forwards;
+      box-shadow: 0 0 0 0.2em var(--sub-color);
+      border-radius: var(--roundness);
+    }
+
+    .groupTitle button.text {
+      padding: 0;
+      margin-left: 0.5em;
+      align-self: center;
+      opacity: 0;
+      .fas {
+        margin-right: 0;
+      }
+    }
+    &:hover .groupTitle button.text {
+      opacity: 1;
     }
   }
 }

@@ -1,48 +1,61 @@
 import Config from "./config";
 import * as Caret from "./test/caret";
-import * as Notifications from "./elements/notifications";
 import * as CustomText from "./test/custom-text";
 import * as TestState from "./test/test-state";
 import * as ConfigEvent from "./observables/config-event";
 import { debounce, throttle } from "throttle-debounce";
 import * as TestUI from "./test/test-ui";
 import { get as getActivePage } from "./states/active-page";
-import { isLocalhost } from "./utils/misc";
+import { isDevEnvironment } from "./utils/misc";
+import { isCustomTextLong } from "./states/custom-text-name";
+import { canQuickRestart } from "./utils/quick-restart";
 
-function updateKeytips(): void {
-  const modifierKey = window.navigator.userAgent.toLowerCase().includes("mac")
-    ? "cmd"
-    : "ctrl";
+let isPreviewingFont = false;
+export function previewFontFamily(font: string): void {
+  document.documentElement.style.setProperty(
+    "--font",
+    '"' + font.replace(/_/g, " ") + '", "Roboto Mono", "Vazirmatn"'
+  );
+  void TestUI.updateHintsPositionDebounced();
+  isPreviewingFont = true;
+}
 
-  if (Config.quickRestart === "esc") {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (<key>${modifierKey}</key>+<key>shift</key>+<key>p</key>)`);
-  } else {
-    $(".pageSettings .tip").html(`
-    tip: You can also change all these settings quickly using the
-    command line (<key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key>)`);
-  }
+export function clearFontPreview(): void {
+  if (!isPreviewingFont) return;
+  previewFontFamily(Config.fontFamily);
+  isPreviewingFont = false;
+}
 
-  if (Config.quickRestart === "esc") {
-    $("footer .keyTips").html(`
-    <key>esc</key> - restart test<br>
-    <key>tab</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
-  } else if (Config.quickRestart === "tab") {
-    $("footer .keyTips").html(`
-    <key>tab</key> - restart test<br>
-      <key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
-  } else {
-    $("footer .keyTips").html(`
-    <key>tab</key> + <key>enter</key> - restart test<br>
-    <key>esc</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
+export function setMediaQueryDebugLevel(level: number): void {
+  const body = document.querySelector("body") as HTMLElement;
+
+  body.classList.remove("mediaQueryDebugLevel1");
+  body.classList.remove("mediaQueryDebugLevel2");
+  body.classList.remove("mediaQueryDebugLevel3");
+
+  if (level > 0 && level < 4) {
+    body.classList.add(`mediaQueryDebugLevel${level}`);
   }
 }
 
-if (isLocalhost()) {
-  window.onerror = function (error): void {
-    Notifications.add(error.toString(), -1);
-  };
+function updateKeytips(): void {
+  const userAgent = window.navigator.userAgent.toLowerCase();
+  const modifierKey =
+    userAgent.includes("mac") && !userAgent.includes("firefox")
+      ? "cmd"
+      : "ctrl";
+
+  const commandKey = Config.quickRestart === "esc" ? "tab" : "esc";
+  $("footer .keyTips").html(`
+    ${
+      Config.quickRestart === "off"
+        ? "<key>tab</key> + <key>enter</key>"
+        : `<key>${Config.quickRestart}</key>`
+    } - restart test<br>
+    <key>${commandKey}</key> or <key>${modifierKey}</key>+<key>shift</key>+<key>p</key> - command line`);
+}
+
+if (isDevEnvironment()) {
   $("header #logo .top").text("localhost");
   $("head title").text($("head title").text() + " (localhost)");
   $("body").append(
@@ -60,18 +73,13 @@ window.addEventListener("keydown", function (e) {
 window.addEventListener("beforeunload", (event) => {
   // Cancel the event as stated by the standard.
   if (
-    (Config.mode === "words" && Config.words < 1000) ||
-    (Config.mode === "time" && Config.time < 3600) ||
-    Config.mode === "quote" ||
-    (Config.mode === "custom" &&
-      CustomText.isWordRandom &&
-      CustomText.word < 1000) ||
-    (Config.mode === "custom" &&
-      CustomText.isTimeRandom &&
-      CustomText.time < 1000) ||
-    (Config.mode === "custom" &&
-      !CustomText.isWordRandom &&
-      CustomText.text.length < 1000)
+    canQuickRestart(
+      Config.mode,
+      Config.words,
+      Config.time,
+      CustomText.getData(),
+      isCustomTextLong() ?? false
+    )
   ) {
     //ignore
   } else {
@@ -83,27 +91,21 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 
-const debouncedEvent = debounce(250, async () => {
-  Caret.updatePosition();
+const debouncedEvent = debounce(250, () => {
   if (getActivePage() === "test" && !TestUI.resultVisible) {
     if (Config.tapeMode !== "off") {
-      TestUI.scrollTape();
+      void TestUI.scrollTape();
     } else {
-      const word =
-        document.querySelectorAll<HTMLElement>("#words .word")[
-          TestUI.currentWordElementIndex - 1
-        ];
-      if (word) {
-        const currentTop: number = Math.floor(word.offsetTop);
-        TestUI.lineJump(currentTop);
+      void TestUI.centerActiveLine();
+      void TestUI.updateHintsPositionDebounced();
+    }
+    setTimeout(() => {
+      void TestUI.updateWordsInputPosition();
+      if ($("#wordsInput").is(":focus")) {
+        Caret.show(true);
       }
-    }
+    }, 250);
   }
-  setTimeout(() => {
-    if ($("#wordsInput").is(":focus")) {
-      Caret.show();
-    }
-  }, 250);
 });
 
 const throttledEvent = throttle(250, () => {

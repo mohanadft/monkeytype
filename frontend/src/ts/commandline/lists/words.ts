@@ -1,14 +1,15 @@
 import * as UpdateConfig from "../../config";
 import * as TestLogic from "../../test/test-logic";
+import { Command } from "../types";
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeWordCount",
     display: "Words...",
     alias: "words",
     icon: "fa-font",
     subgroup: {
-      title: "Change word count...",
+      title: "Words...",
       configKey: "words",
       list: [
         {
@@ -65,8 +66,8 @@ const commands: MonkeyTypes.Command[] = [
           id: "changeWordCountCustom",
           display: "custom...",
           input: true,
-          exec: (input): void => {
-            if (!input) return;
+          exec: ({ input }): void => {
+            if (input === undefined || input === "") return;
             UpdateConfig.setMode("words");
             UpdateConfig.setWordCount(parseInt(input));
             TestLogic.restart();

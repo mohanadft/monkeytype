@@ -1,8 +1,9 @@
-import admin, { ServiceAccount } from "firebase-admin";
+import admin from "firebase-admin";
 import Logger from "../utils/logger";
-import { readFileSync, existsSync } from "fs";
+import { existsSync } from "fs";
 import MonkeyError from "../utils/error";
 import path from "path";
+import { isDevEnvironment } from "../utils/misc";
 
 const SERVICE_ACCOUNT_PATH = path.join(
   __dirname,
@@ -11,10 +12,12 @@ const SERVICE_ACCOUNT_PATH = path.join(
 
 export function init(): void {
   if (!existsSync(SERVICE_ACCOUNT_PATH)) {
-    if (process.env.MODE === "dev") {
+    if (isDevEnvironment()) {
       Logger.warning(
         "Firebase service account key not found! Continuing in dev mode, but authentication will throw errors."
       );
+    } else if (process.env["BYPASS_FIREBASE"] === "true") {
+      Logger.warning("BYPASS_FIREBASE is enabled! Running without firebase.");
     } else {
       throw new MonkeyError(
         500,
@@ -23,16 +26,8 @@ export function init(): void {
       );
     }
   } else {
-    const serviceAccount = JSON.parse(
-      readFileSync(SERVICE_ACCOUNT_PATH, {
-        encoding: "utf8",
-        flag: "r",
-      })
-    );
     admin.initializeApp({
-      credential: admin.credential.cert(
-        serviceAccount as unknown as ServiceAccount
-      ),
+      credential: admin.credential.cert(SERVICE_ACCOUNT_PATH),
     });
     Logger.success("Firebase app initialized");
   }

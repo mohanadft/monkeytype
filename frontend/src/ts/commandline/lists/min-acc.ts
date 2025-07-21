@@ -1,7 +1,8 @@
 import * as UpdateConfig from "../../config";
+import { Command, CommandsSubgroup } from "../types";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
-  title: "Change min accuracy mode...",
+const subgroup: CommandsSubgroup = {
+  title: "Minimum accuracy...",
   configKey: "minAcc",
   list: [
     {
@@ -17,8 +18,8 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
       display: "custom...",
       configValue: "custom",
       input: true,
-      exec: (input): void => {
-        if (!input) return;
+      exec: ({ input }): void => {
+        if (input === undefined || input === "") return;
         UpdateConfig.setMinAccCustom(parseInt(input));
         UpdateConfig.setMinAcc("custom");
       },
@@ -26,7 +27,7 @@ const subgroup: MonkeyTypes.CommandsSubgroup = {
   ],
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeMinAcc",
     display: "Minimum accuracy...",

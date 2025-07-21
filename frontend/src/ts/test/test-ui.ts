@@ -1,87 +1,121 @@
 import * as Notifications from "../elements/notifications";
 import * as ThemeColors from "../elements/theme-colors";
 import Config, * as UpdateConfig from "../config";
-import * as DB from "../db";
 import * as TestWords from "./test-words";
 import * as TestInput from "./test-input";
 import * as CustomText from "./custom-text";
 import * as Caret from "./caret";
 import * as OutOfFocus from "./out-of-focus";
-import * as Replay from "./replay";
 import * as Misc from "../utils/misc";
+import * as Strings from "../utils/strings";
+import * as JSONData from "../utils/json-data";
+import { blendTwoHexColors } from "../utils/colors";
 import { get as getTypingSpeedUnit } from "../utils/typing-speed-units";
 import * as SlowTimer from "../states/slow-timer";
 import * as CompositionState from "../states/composition";
 import * as ConfigEvent from "../observables/config-event";
 import * as Hangul from "hangul-js";
-import format from "date-fns/format";
-import { Auth } from "../firebase";
-import { skipXpBreakdown } from "../elements/account-button";
-import * as FunboxList from "./funbox/funbox-list";
 import { debounce } from "throttle-debounce";
 import * as ResultWordHighlight from "../elements/result-word-highlight";
+import * as ActivePage from "../states/active-page";
+import Format from "../utils/format";
+import {
+  TimerColor,
+  TimerOpacity,
+} from "@monkeytype/contracts/schemas/configs";
+import { convertRemToPixels } from "../utils/numbers";
+import { findSingleActiveFunboxWithFunction } from "./funbox/list";
+import * as TestState from "./test-state";
 
-const debouncedZipfCheck = debounce(250, () => {
-  Misc.checkIfLanguageSupportsZipf(Config.language).then((supports) => {
-    if (supports === "no") {
-      Notifications.add(
-        `${Misc.capitalizeFirstLetter(
-          Config.language.replace(/_/g, " ")
-        )} does not support Zipf funbox, because the list is not ordered by frequency. Please try another word list.`,
-        0,
-        {
-          duration: 7,
-        }
-      );
-    }
-    if (supports === "unknown") {
-      Notifications.add(
-        `${Misc.capitalizeFirstLetter(
-          Config.language.replace(/_/g, " ")
-        )} may not support Zipf funbox, because we don't know if it's ordered by frequency or not. If you would like to add this label, please contact us.`,
-        0,
-        {
-          duration: 7,
-        }
-      );
-    }
-  });
+const debouncedZipfCheck = debounce(250, async () => {
+  const supports = await JSONData.checkIfLanguageSupportsZipf(Config.language);
+  if (supports === "no") {
+    Notifications.add(
+      `${Strings.capitalizeFirstLetter(
+        Strings.getLanguageDisplayString(Config.language)
+      )} does not support Zipf funbox, because the list is not ordered by frequency. Please try another word list.`,
+      0,
+      {
+        duration: 7,
+      }
+    );
+  }
+  if (supports === "unknown") {
+    Notifications.add(
+      `${Strings.capitalizeFirstLetter(
+        Strings.getLanguageDisplayString(Config.language)
+      )} may not support Zipf funbox, because we don't know if it's ordered by frequency or not. If you would like to add this label, please contact us.`,
+      0,
+      {
+        duration: 7,
+      }
+    );
+  }
 });
+
+export const updateHintsPositionDebounced = Misc.debounceUntilResolved(
+  updateHintsPosition,
+  { rejectSkippedCalls: false }
+);
 
 ConfigEvent.subscribe((eventKey, eventValue, nosave) => {
   if (
     (eventKey === "language" || eventKey === "funbox") &&
-    Config.funbox.split("#").includes("zipf")
+    Config.funbox.includes("zipf")
   ) {
     debouncedZipfCheck();
   }
   if (eventKey === "fontSize" && !nosave) {
-    setTimeout(() => {
-      updateWordsHeight(true);
-      updateWordsInputPosition(true);
-    }, 0);
+    OutOfFocus.hide();
+    updateWordWrapperClasses();
+  }
+  if (
+    ["fontSize", "fontFamily", "blindMode", "hideExtraLetters"].includes(
+      eventKey
+    )
+  ) {
+    void updateHintsPositionDebounced();
   }
 
-  if (eventKey === "theme") applyBurstHeatmap();
+  if (eventKey === "theme") void applyBurstHeatmap();
 
   if (eventValue === undefined) return;
   if (eventKey === "highlightMode") {
-    highlightMode(eventValue as MonkeyTypes.HighlightMode);
-    updateActiveElement();
+    if (ActivePage.get() === "test") updateActiveElement();
+  }
+
+  if (
+    [
+      "highlightMode",
+      "blindMode",
+      "indicateTypos",
+      "tapeMode",
+      "hideExtraLetters",
+    ].includes(eventKey)
+  ) {
+    updateWordWrapperClasses();
+  }
+
+  if (["tapeMode", "tapeMargin"].includes(eventKey)) {
+    updateLiveStatsMargin();
+  }
+
+  if (eventKey === "showAllLines") {
+    updateWordsWrapperHeight(true);
+    if (eventValue === false) {
+      void centerActiveLine();
+    }
   }
 
   if (typeof eventValue !== "boolean") return;
   if (eventKey === "flipTestColors") flipColors(eventValue);
   if (eventKey === "colorfulMode") colorful(eventValue);
-  if (eventKey === "highlightMode") updateWordElement(eventValue);
-  if (eventKey === "burstHeatmap") applyBurstHeatmap();
+  if (eventKey === "burstHeatmap") void applyBurstHeatmap();
 });
 
-export let currentWordElementIndex = 0;
 export let resultVisible = false;
 export let activeWordTop = 0;
 export let testRestarting = false;
-export let testRestartingPromise: Promise<unknown>;
 export let lineTransition = false;
 export let currentTestLine = 0;
 export let resultCalculating = false;
@@ -90,24 +124,22 @@ export function setResultVisible(val: boolean): void {
   resultVisible = val;
 }
 
-export function setCurrentWordElementIndex(val: number): void {
-  currentWordElementIndex = val;
-}
-
 export function setActiveWordTop(val: number): void {
   activeWordTop = val;
 }
 
-let restartingResolve: null | ((value?: unknown) => void);
+let { promise: testRestartingPromise, resolve: restartingResolve } =
+  Misc.promiseWithResolvers();
+
+export { testRestartingPromise };
+
 export function setTestRestarting(val: boolean): void {
   testRestarting = val;
-  if (val === true) {
-    testRestartingPromise = new Promise((resolve) => {
-      restartingResolve = resolve;
-    });
+  if (val) {
+    ({ promise: testRestartingPromise, resolve: restartingResolve } =
+      Misc.promiseWithResolvers());
   } else {
-    if (restartingResolve) restartingResolve();
-    restartingResolve = null;
+    restartingResolve();
   }
 }
 
@@ -117,13 +149,15 @@ export function setResultCalculating(val: boolean): void {
 
 export function reset(): void {
   currentTestLine = 0;
-  currentWordElementIndex = 0;
+  TestState.setRemovedUIWordCount(0);
 }
 
 export function focusWords(): void {
-  if (!$("#wordsWrapper").hasClass("hidden")) {
-    $("#wordsInput").trigger("focus");
-  }
+  $("#wordsInput").trigger("focus");
+}
+
+export function blurWords(): void {
+  $("#wordsInput").trigger("blur");
 }
 
 export function updateActiveElement(
@@ -131,66 +165,248 @@ export function updateActiveElement(
   initial = false
 ): void {
   const active = document.querySelector("#words .active");
+  if (!backspace) {
+    active?.classList.add("typed");
+  }
   if (Config.mode === "zen" && backspace) {
     active?.remove();
-  } else if (active !== null) {
-    if (Config.highlightMode === "word") {
-      active.querySelectorAll("letter").forEach((e) => {
-        e.classList.remove("correct");
-      });
-    }
+  } else if (active !== null && !initial) {
     active.classList.remove("active");
   }
-  try {
-    const activeWord =
-      document.querySelectorAll("#words .word")[currentWordElementIndex];
-    activeWord.classList.add("active");
-    activeWord.classList.remove("error");
-    activeWordTop = (<HTMLElement>document.querySelector("#words .active"))
-      .offsetTop;
-    if (Config.highlightMode === "word") {
-      activeWord.querySelectorAll("letter").forEach((e) => {
-        e.classList.add("correct");
-      });
-    }
-  } catch (e) {}
+  const newActiveWord = document.querySelectorAll("#words .word")[
+    TestState.activeWordIndex - TestState.removedUIWordCount
+  ] as HTMLElement | undefined;
+
+  if (newActiveWord === undefined) {
+    throw new Error("activeWord is undefined - can't update active element");
+  }
+
+  newActiveWord.classList.add("active");
+  newActiveWord.classList.remove("error");
+  newActiveWord.classList.remove("typed");
+
+  activeWordTop = newActiveWord.offsetTop;
+
   if (!initial && shouldUpdateWordsInputPosition()) {
-    updateWordsInputPosition();
+    void updateWordsInputPosition();
+  }
+  if (!initial && Config.tapeMode !== "off") {
+    void scrollTape();
+  }
+}
+
+function createHintsHtml(
+  incorrectLettersIndices: number[][],
+  activeWordLetters: NodeListOf<Element>,
+  input: string | string[],
+  wrapWithDiv: boolean = true
+): string {
+  // if input is an array, it contains only incorrect letters input.
+  // if input is a string, it contains the whole word input.
+  const isFullWord = typeof input === "string";
+  const inputChars = isFullWord ? Strings.splitIntoCharacters(input) : input;
+
+  let hintsHtml = "";
+  let currentHint = 0;
+
+  for (const adjacentLetters of incorrectLettersIndices) {
+    for (const letterIndex of adjacentLetters) {
+      const letter = activeWordLetters[letterIndex] as HTMLElement;
+      const blockIndices = `${letterIndex}`;
+      const blockChars = isFullWord
+        ? inputChars[letterIndex]
+        : inputChars[currentHint++];
+
+      hintsHtml += `<hint data-chars-index=${blockIndices} style="left:${
+        letter.offsetLeft + letter.offsetWidth / 2
+      }px;">${blockChars}</hint>`;
+    }
+  }
+  if (wrapWithDiv) hintsHtml = `<div class="hints">${hintsHtml}</div>`;
+  return hintsHtml;
+}
+
+async function joinOverlappingHints(
+  incorrectLettersIndices: number[][],
+  activeWordLetters: NodeListOf<Element>,
+  hintElements: HTMLCollection
+): Promise<void> {
+  const currentLanguage = await JSONData.getCurrentLanguage(Config.language);
+  const isLanguageRTL = currentLanguage.rightToLeft;
+
+  let previousBlocksAdjacent = false;
+  let currentHintBlock = 0;
+  let HintBlocksCount = hintElements.length;
+  while (currentHintBlock < HintBlocksCount - 1) {
+    const hintBlock1 = hintElements[currentHintBlock] as HTMLElement;
+    const hintBlock2 = hintElements[currentHintBlock + 1] as HTMLElement;
+
+    const block1Indices = hintBlock1.dataset["charsIndex"]?.split(",") ?? [];
+    const block2Indices = hintBlock2.dataset["charsIndex"]?.split(",") ?? [];
+
+    const block1Letter1Indx = parseInt(block1Indices[0] ?? "0");
+    const block2Letter1Indx = parseInt(block2Indices[0] ?? "0");
+
+    const currentBlocksAdjacent = incorrectLettersIndices.some(
+      (adjacentLettersSequence) =>
+        adjacentLettersSequence.includes(block1Letter1Indx) &&
+        adjacentLettersSequence.includes(block2Letter1Indx)
+    );
+
+    if (!currentBlocksAdjacent) {
+      currentHintBlock++;
+      previousBlocksAdjacent = false;
+      continue;
+    }
+
+    const block1Letter1 = activeWordLetters[block1Letter1Indx] as HTMLElement;
+    const block2Letter1 = activeWordLetters[block2Letter1Indx] as HTMLElement;
+
+    const sameTop = block1Letter1.offsetTop === block2Letter1.offsetTop;
+
+    const leftBlock = isLanguageRTL ? hintBlock2 : hintBlock1;
+    const rightBlock = isLanguageRTL ? hintBlock1 : hintBlock2;
+
+    // block edge is offset half its width because of transform: translate(-50%)
+    const leftBlockEnds = leftBlock.offsetLeft + leftBlock.offsetWidth / 2;
+    const rightBlockStarts = rightBlock.offsetLeft - rightBlock.offsetWidth / 2;
+
+    if (sameTop && leftBlockEnds > rightBlockStarts) {
+      // join hint blocks
+      hintBlock1.dataset["charsIndex"] = [
+        ...block1Indices,
+        ...block2Indices,
+      ].join(",");
+
+      const block1Letter1Pos =
+        block1Letter1.offsetLeft +
+        (isLanguageRTL ? block1Letter1.offsetWidth : 0);
+      const bothBlocksLettersWidthHalved =
+        hintBlock2.offsetLeft - hintBlock1.offsetLeft;
+      hintBlock1.style.left =
+        block1Letter1Pos + bothBlocksLettersWidthHalved + "px";
+
+      hintBlock1.insertAdjacentHTML("beforeend", hintBlock2.innerHTML);
+      hintBlock2.remove();
+
+      // after joining blocks, the sequence is shorter
+      HintBlocksCount--;
+      // check if the newly formed block overlaps with the previous one
+      if (previousBlocksAdjacent && currentHintBlock > 0) currentHintBlock--;
+    } else {
+      currentHintBlock++;
+    }
+    previousBlocksAdjacent = true;
+  }
+}
+
+async function updateHintsPosition(): Promise<void> {
+  if (
+    ActivePage.get() !== "test" ||
+    resultVisible ||
+    Config.indicateTypos !== "below"
+  )
+    return;
+
+  let previousHintsContainer: HTMLElement | undefined;
+  let hintIndices: number[][] = [];
+  let hintText: string[] = [];
+
+  const hintElements = document.querySelectorAll<HTMLElement>(".hints > hint");
+
+  for (const hintEl of hintElements) {
+    const hintsContainer = hintEl.parentElement as HTMLElement;
+
+    if (hintsContainer !== previousHintsContainer) {
+      await adjustHintsContainer(previousHintsContainer, hintIndices, hintText);
+      previousHintsContainer = hintsContainer;
+      hintIndices = [];
+      hintText = [];
+    }
+
+    const letterIndices = hintEl.dataset["charsIndex"]
+      ?.split(",")
+      .map((index) => parseInt(index));
+
+    if (letterIndices === undefined || letterIndices.length === 0) continue;
+
+    for (const currentLetterIndex of letterIndices) {
+      const lastBlock = hintIndices[hintIndices.length - 1];
+      if (
+        lastBlock &&
+        lastBlock[lastBlock.length - 1] === currentLetterIndex - 1
+      ) {
+        lastBlock.push(currentLetterIndex);
+      } else {
+        hintIndices.push([currentLetterIndex]);
+      }
+    }
+
+    hintText.push(...Strings.splitIntoCharacters(hintEl.innerHTML));
+  }
+  await adjustHintsContainer(previousHintsContainer, hintIndices, hintText);
+
+  async function adjustHintsContainer(
+    hintsContainer: HTMLElement | undefined,
+    hintIndices: number[][],
+    hintText: string[]
+  ): Promise<void> {
+    if (!hintsContainer || hintIndices.length === 0) return;
+
+    const wordElement = hintsContainer.parentElement as HTMLElement;
+    const letterElements = wordElement.querySelectorAll<HTMLElement>("letter");
+
+    hintsContainer.innerHTML = createHintsHtml(
+      hintIndices,
+      letterElements,
+      hintText,
+      false
+    );
+    const wordHintsElements = wordElement.getElementsByTagName("hint");
+    await joinOverlappingHints(hintIndices, letterElements, wordHintsElements);
   }
 }
 
 function getWordHTML(word: string): string {
   let newlineafter = false;
   let retval = `<div class='word'>`;
-  const funbox = FunboxList.get(Config.funbox).find(
-    (f) => f.functions?.getWordHtml
-  );
-  for (let c = 0; c < word.length; c++) {
-    if (funbox?.functions?.getWordHtml) {
-      retval += funbox.functions.getWordHtml(word.charAt(c), true);
-    } else if (word.charAt(c) === "\t") {
+
+  const funbox = findSingleActiveFunboxWithFunction("getWordHtml");
+  const chars = Strings.splitIntoCharacters(word);
+  for (const char of chars) {
+    if (funbox) {
+      retval += funbox.functions.getWordHtml(char, true);
+    } else if (char === "\t") {
       retval += `<letter class='tabChar'><i class="fas fa-long-arrow-alt-right fa-fw"></i></letter>`;
-    } else if (word.charAt(c) === "\n") {
+    } else if (char === "\n") {
       newlineafter = true;
       retval += `<letter class='nlChar'><i class="fas fa-level-down-alt fa-rotate-90 fa-fw"></i></letter>`;
     } else {
-      retval += "<letter>" + word.charAt(c) + "</letter>";
+      retval += "<letter>" + char + "</letter>";
     }
   }
   retval += "</div>";
-  if (newlineafter) retval += "<div class='newline'></div>";
+  if (newlineafter)
+    retval +=
+      "<div class='beforeNewline'></div><div class='newline'></div><div class='afterNewline'></div>";
   return retval;
 }
 
-export function showWords(): void {
-  $("#words").empty();
-
+function updateWordWrapperClasses(): void {
   if (Config.tapeMode !== "off") {
     $("#words").addClass("tape");
     $("#wordsWrapper").addClass("tape");
   } else {
     $("#words").removeClass("tape");
     $("#wordsWrapper").removeClass("tape");
+  }
+
+  if (Config.blindMode) {
+    $("#words").addClass("blind");
+    $("#wordsWrapper").addClass("blind");
+  } else {
+    $("#words").removeClass("blind");
+    $("#wordsWrapper").removeClass("blind");
   }
 
   if (Config.indicateTypos === "below") {
@@ -201,22 +417,54 @@ export function showWords(): void {
     $("#wordsWrapper").removeClass("indicateTyposBelow");
   }
 
-  let wordsHTML = "";
-  if (Config.mode !== "zen") {
-    for (let i = 0; i < TestWords.words.length; i++) {
-      wordsHTML += getWordHTML(<string>TestWords.words.get(i));
-    }
+  if (Config.hideExtraLetters) {
+    $("#words").addClass("hideExtraLetters");
+    $("#wordsWrapper").addClass("hideExtraLetters");
   } else {
-    wordsHTML =
-      '<div class="word">word height</div><div class="word active"></div>';
+    $("#words").removeClass("hideExtraLetters");
+    $("#wordsWrapper").removeClass("hideExtraLetters");
   }
 
-  $("#words").html(wordsHTML);
+  const existing =
+    $("#words")
+      ?.attr("class")
+      ?.split(/\s+/)
+      ?.filter((it) => !it.startsWith("highlight-")) ?? [];
+  if (Config.highlightMode !== null) {
+    existing.push("highlight-" + Config.highlightMode.replaceAll("_", "-"));
+  }
 
-  updateWordsHeight(true);
+  $("#words").attr("class", existing.join(" "));
+
+  updateWordsWidth();
+  updateWordsWrapperHeight(true);
+  updateWordsMargin(updateWordsInputPosition, [true]);
+}
+
+export function showWords(): void {
+  $("#words").empty();
+
+  if (Config.mode === "zen") {
+    appendEmptyWordElement();
+  } else {
+    let wordsHTML = "";
+    for (let i = 0; i < TestWords.words.length; i++) {
+      wordsHTML += getWordHTML(TestWords.words.get(i));
+    }
+    $("#words").html(wordsHTML);
+  }
+
   updateActiveElement(undefined, true);
-  Caret.updatePosition();
-  updateWordsInputPosition(true);
+  updateWordWrapperClasses();
+  setTimeout(() => {
+    void Caret.updatePosition();
+  }, 125);
+}
+
+export function appendEmptyWordElement(): void {
+  $("#words").append(
+    "<div class='word'><letter class='invisible'>_</letter></div>"
+  );
 }
 
 const posUpdateLangList = ["japanese", "chinese", "korean"];
@@ -225,12 +473,20 @@ function shouldUpdateWordsInputPosition(): boolean {
   return language || (Config.mode !== "time" && Config.showAllLines);
 }
 
-export function updateWordsInputPosition(initial = false): void {
-  if (Config.tapeMode !== "off" && !initial) return;
-  const el = document.querySelector("#wordsInput") as HTMLElement;
-  const activeWord = document.querySelector(
-    "#words .active"
-  ) as HTMLElement | null;
+export async function updateWordsInputPosition(initial = false): Promise<void> {
+  if (ActivePage.get() !== "test") return;
+
+  const currentLanguage = await JSONData.getCurrentLanguage(Config.language);
+  const isLanguageRTL = currentLanguage.rightToLeft;
+
+  const el = document.querySelector<HTMLElement>("#wordsInput");
+
+  if (!el) return;
+
+  const activeWord =
+    document.querySelectorAll<HTMLElement>("#words .word")[
+      TestState.activeWordIndex - TestState.removedUIWordCount
+    ];
 
   if (!activeWord) {
     el.style.top = "0px";
@@ -242,128 +498,179 @@ export function updateWordsInputPosition(initial = false): void {
   const activeWordMargin =
     parseInt(computed.marginTop) + parseInt(computed.marginBottom);
 
-  const wordsWrapperTop =
-    (document.querySelector("#wordsWrapper") as HTMLElement | null)
-      ?.offsetTop || 0;
+  const letterHeight = convertRemToPixels(Config.fontSize);
+  const targetTop =
+    activeWord.offsetTop + letterHeight / 2 - el.offsetHeight / 2 + 1; //+1 for half of border
 
   if (Config.tapeMode !== "off") {
-    el.style.top =
-      wordsWrapperTop +
-      activeWord.offsetHeight +
-      activeWordMargin * 0.25 +
-      -el.offsetHeight +
-      "px";
-    el.style.left = activeWord.offsetLeft + "px";
-    return;
+    el.style.maxWidth = `${100 - Config.tapeMargin}%`;
+  } else {
+    el.style.maxWidth = "";
+  }
+  if (activeWord.offsetWidth < letterHeight) {
+    el.style.width = letterHeight + "px";
+  } else {
+    el.style.width = activeWord.offsetWidth + "px";
   }
 
   if (
     initial &&
-    !posUpdateLangList.some((l) => Config.language.startsWith(l))
+    !shouldUpdateWordsInputPosition() &&
+    Config.tapeMode === "off"
   ) {
-    el.style.left = "0px";
-    el.style.top =
-      wordsWrapperTop +
-      activeWord.offsetHeight * 2 +
-      activeWordMargin * 1.5 +
-      -el.offsetHeight +
-      "px";
+    el.style.top = targetTop + letterHeight + activeWordMargin + 4 + "px";
   } else {
-    el.style.left = activeWord.offsetLeft + "px";
-    el.style.top =
-      activeWord.offsetTop -
-      activeWordMargin +
-      wordsWrapperTop +
-      activeWord.offsetHeight +
-      activeWordMargin +
-      -el.offsetHeight +
-      "px";
+    el.style.top = targetTop + "px";
+  }
+
+  if (activeWord.offsetWidth < letterHeight && isLanguageRTL) {
+    el.style.left = activeWord.offsetLeft - letterHeight + "px";
+  } else {
+    el.style.left = Math.max(0, activeWord.offsetLeft) + "px";
   }
 }
 
-function updateWordsHeight(force = false): void {
-  if (!force && Config.mode !== "custom") return;
-  $("#wordsWrapper").removeClass("hidden");
-  const wordHeight = <number>(
-    $(<Element>document.querySelector(".word")).outerHeight(true)
-  );
-  const wordsHeight = <number>(
-    $(<Element>document.querySelector("#words")).outerHeight(true)
-  );
-  if (
-    Config.showAllLines &&
-    Config.mode !== "time" &&
-    !(CustomText.isWordRandom && CustomText.word === 0) &&
-    !CustomText.isTimeRandom
-  ) {
-    $("#words")
-      .css("height", "auto")
-      .css("overflow", "hidden")
-      .css("width", "100%")
-      .css("margin-left", "unset");
-    $("#wordsWrapper").css("height", "auto").css("overflow", "hidden");
+let centeringActiveLine: Promise<void> = Promise.resolve();
 
-    let nh = wordHeight * 3;
+export async function centerActiveLine(): Promise<void> {
+  if (Config.showAllLines) {
+    return;
+  }
 
-    if (nh > wordsHeight) {
-      nh = wordsHeight;
+  const { resolve, promise } = Misc.promiseWithResolvers<void>();
+  centeringActiveLine = promise;
+
+  const wordElements = document.querySelectorAll<HTMLElement>("#words .word");
+  const activeWordIndex =
+    TestState.activeWordIndex - TestState.removedUIWordCount;
+  const activeWordEl = wordElements[activeWordIndex];
+  if (!activeWordEl) {
+    resolve();
+    return;
+  }
+  const currentTop = activeWordEl.offsetTop;
+
+  let previousLineTop = currentTop;
+  for (let i = activeWordIndex - 1; i >= 0; i--) {
+    previousLineTop = wordElements[i]?.offsetTop ?? currentTop;
+    if (previousLineTop < currentTop) {
+      await lineJump(previousLineTop, true);
+      resolve();
+      return;
     }
-    $(".outOfFocusWarning").css("line-height", nh + "px");
-  } else {
-    let finalWordsHeight: number, finalWrapperHeight: number;
+  }
 
-    if (Config.tapeMode !== "off") {
-      finalWordsHeight = wordHeight * 2;
-      finalWrapperHeight = wordHeight;
-    } else {
+  resolve();
+}
+
+export function updateWordsWrapperHeight(force = false): void {
+  if (ActivePage.get() !== "test" || resultVisible) return;
+  if (!force && Config.mode !== "custom") return;
+  const wrapperEl = document.getElementById("wordsWrapper") as HTMLElement;
+  const outOfFocusEl = document.querySelector(
+    ".outOfFocusWarning"
+  ) as HTMLElement;
+  const wordElements = wrapperEl.querySelectorAll<HTMLElement>("#words .word");
+  const activeWordEl =
+    wordElements[TestState.activeWordIndex - TestState.removedUIWordCount];
+  if (!activeWordEl) return;
+
+  wrapperEl.classList.remove("hidden");
+
+  const wordComputedStyle = window.getComputedStyle(activeWordEl);
+  const wordMargin =
+    parseInt(wordComputedStyle.marginTop) +
+    parseInt(wordComputedStyle.marginBottom);
+  const wordHeight = activeWordEl.offsetHeight + wordMargin;
+
+  const timedTest =
+    Config.mode === "time" ||
+    (Config.mode === "custom" && CustomText.getLimitMode() === "time") ||
+    (Config.mode === "custom" && CustomText.getLimitValue() === 0);
+
+  const showAllLines = Config.showAllLines && !timedTest;
+
+  if (showAllLines) {
+    //allow the wrapper to grow and shink with the words
+    wrapperEl.style.height = "";
+  } else if (Config.mode === "zen") {
+    //zen mode, showAllLines off
+    wrapperEl.style.height = wordHeight * 2 + "px";
+  } else {
+    if (Config.tapeMode === "off") {
+      //tape off, showAllLines off, non-zen mode
       let lines = 0;
-      let lastHeight = 0;
+      let lastTop = 0;
       let wordIndex = 0;
-      const words = document.querySelectorAll("#words .word");
       let wrapperHeight = 0;
 
-      const wordComputedStyle = window.getComputedStyle(words[0]);
-      const wordTopMargin = parseInt(wordComputedStyle.marginTop);
-      const wordBottomMargin = parseInt(wordComputedStyle.marginBottom);
-
       while (lines < 3) {
-        const word = words[wordIndex] as HTMLElement | null;
+        const word = wordElements[wordIndex] as HTMLElement | null;
         if (!word) break;
-        const height = word.offsetTop;
-        if (height > lastHeight) {
+        const top = word.offsetTop;
+        if (top > lastTop) {
           lines++;
-          wrapperHeight += word.offsetHeight + wordTopMargin + wordBottomMargin;
-          lastHeight = height;
+          wrapperHeight += word.offsetHeight + wordMargin;
+          lastTop = top;
         }
         wordIndex++;
       }
-
       if (lines < 3) wrapperHeight = wrapperHeight * (3 / lines);
 
-      const wordsHeight = (wrapperHeight / 3) * 4;
-
-      finalWordsHeight = wordsHeight;
-      finalWrapperHeight = wrapperHeight;
-    }
-
-    $("#words")
-      .css("height", finalWordsHeight + "px")
-      .css("overflow", "hidden");
-
-    if (Config.tapeMode !== "off") {
-      $("#words").css("width", "200%").css("margin-left", "50%");
+      //limit to 3 lines
+      wrapperEl.style.height = wrapperHeight + "px";
     } else {
-      $("#words").css("width", "100%").css("margin-left", "unset");
+      //show 3 lines if tape mode is on and has newlines, otherwise use words height (because of indicate typos: below)
+      if (TestWords.hasNewline) {
+        wrapperEl.style.height = wordHeight * 3 + "px";
+      } else {
+        const wordsHeight =
+          document.getElementById("words")?.offsetHeight ?? wordHeight;
+        wrapperEl.style.height = wordsHeight + "px";
+      }
     }
-
-    $("#wordsWrapper")
-      .css("height", finalWrapperHeight + "px")
-      .css("overflow", "hidden");
-    $(".outOfFocusWarning").css("line-height", finalWrapperHeight + "px");
   }
 
-  if (Config.mode === "zen") {
-    $(<Element>document.querySelector(".word")).remove();
+  outOfFocusEl.style.maxHeight = wordHeight * 3 + "px";
+}
+
+function updateWordsMargin<T extends unknown[]>(
+  afterCompleteFn: (...args: T) => void,
+  args: T
+): void {
+  const afterComplete = (): void => {
+    afterCompleteFn(...args);
+    void updateHintsPositionDebounced();
+  };
+  if (Config.tapeMode !== "off") {
+    void scrollTape(true, afterComplete);
+  } else {
+    const wordsEl = document.getElementById("words") as HTMLElement;
+    const afterNewlineEls =
+      wordsEl.querySelectorAll<HTMLElement>(".afterNewline");
+    if (Config.smoothLineScroll) {
+      const jqWords = $(wordsEl);
+      jqWords.stop("leftMargin", true, false).animate(
+        {
+          marginLeft: 0,
+        },
+        {
+          duration: SlowTimer.get() ? 0 : 125,
+          queue: "leftMargin",
+          complete: afterComplete,
+        }
+      );
+      jqWords.dequeue("leftMargin");
+      $(afterNewlineEls)
+        .stop(true, false)
+        .animate({ marginLeft: 0 }, SlowTimer.get() ? 0 : 125);
+    } else {
+      wordsEl.style.marginLeft = `0`;
+      for (const afterNewline of afterNewlineEls) {
+        afterNewline.style.marginLeft = `0`;
+      }
+      afterComplete();
+    }
   }
 }
 
@@ -387,177 +694,35 @@ export function colorful(tc: boolean): void {
   }
 }
 
-let firefoxClipboardNotificatoinShown = false;
-export async function screenshot(): Promise<void> {
-  let revealReplay = false;
-
-  let revertCookie = false;
-  if (
-    Misc.isElementVisible("#cookiePopupWrapper") ||
-    document.contains(document.querySelector("#cookiePopupWrapper"))
-  ) {
-    revertCookie = true;
-  }
-
-  function revertScreenshot(): void {
-    $("#ad-result-wrapper").removeClass("hidden");
-    $("#ad-result-small-wrapper").removeClass("hidden");
-    $("#testConfig").removeClass("hidden");
-    $(".pageTest .screenshotSpacer").remove();
-    $("#notificationCenter").removeClass("hidden");
-    $("#commandLineMobileButton").removeClass("hidden");
-    $(".pageTest .ssWatermark").addClass("hidden");
-    $(".pageTest .ssWatermark").text("monkeytype.com");
-    $(".pageTest .buttons").removeClass("hidden");
-    $("noscript").removeClass("hidden");
-    $("#nocss").removeClass("hidden");
-    $("header, footer").removeClass("invisible");
-    $("#result").removeClass("noBalloons");
-    if (revertCookie) $("#cookiePopupWrapper").removeClass("hidden");
-    if (revealReplay) $("#resultReplay").removeClass("hidden");
-    if (!Auth?.currentUser) {
-      $(".pageTest .loginTip").removeClass("hidden");
-    }
-    (document.querySelector("html") as HTMLElement).style.scrollBehavior =
-      "smooth";
-  }
-
-  if (!$("#resultReplay").hasClass("hidden")) {
-    revealReplay = true;
-    Replay.pauseReplay();
-  }
-  const dateNow = new Date(Date.now());
-  $("#resultReplay").addClass("hidden");
-  $(".pageTest .ssWatermark").removeClass("hidden");
-  $(".pageTest .ssWatermark").text(
-    format(dateNow, "dd MMM yyyy HH:mm") + " | monkeytype.com "
-  );
-  if (Auth?.currentUser) {
-    $(".pageTest .ssWatermark").text(
-      DB.getSnapshot()?.name +
-        " | " +
-        format(dateNow, "dd MMM yyyy HH:mm") +
-        " | monkeytype.com  "
-    );
-  }
-  $(".pageTest .buttons").addClass("hidden");
-  $("#notificationCenter").addClass("hidden");
-  $("#commandLineMobileButton").addClass("hidden");
-  $(".pageTest .loginTip").addClass("hidden");
-  $("noscript").addClass("hidden");
-  $("#nocss").addClass("hidden");
-  $("#ad-result-wrapper").addClass("hidden");
-  $("#ad-result-small-wrapper").addClass("hidden");
-  $("#testConfig").addClass("hidden");
-  $(".page.pageTest").prepend("<div class='screenshotSpacer'></div>");
-  $("header, footer").addClass("invisible");
-  $("#result").addClass("noBalloons");
-  if (revertCookie) $("#cookiePopupWrapper").addClass("hidden");
-
-  (document.querySelector("html") as HTMLElement).style.scrollBehavior = "auto";
-  window.scrollTo({
-    top: 0,
-  });
-  const src = $("#result");
-  const sourceX = src.offset()?.left ?? 0; /*X position from div#target*/
-  const sourceY = src.offset()?.top ?? 0; /*Y position from div#target*/
-  const sourceWidth = <number>(
-    src.outerWidth(true)
-  ); /*clientWidth/offsetWidth from div#target*/
-  const sourceHeight = <number>(
-    src.outerHeight(true)
-  ); /*clientHeight/offsetHeight from div#target*/
-  try {
-    const paddingX = Misc.convertRemToPixels(2);
-    const paddingY = Misc.convertRemToPixels(2);
-    const canvas = await html2canvas(document.body, {
-      backgroundColor: await ThemeColors.get("bg"),
-      width: sourceWidth + paddingX * 2,
-      height: sourceHeight + paddingY * 2,
-      x: sourceX - paddingX,
-      y: sourceY - paddingY,
-    });
-    canvas.toBlob(async (blob) => {
-      try {
-        if (blob === null) {
-          throw new Error("Could not create image, blob is null");
-        }
-        const clipItem = new ClipboardItem(
-          Object.defineProperty({}, blob.type, {
-            value: blob,
-            enumerable: true,
-          })
-        );
-        await navigator.clipboard.write([clipItem]);
-        Notifications.add("Copied to clipboard", 1, {
-          duration: 2,
-        });
-      } catch (e) {
-        console.error("Error while saving image to clipboard", e);
-        if (blob) {
-          //check if on firefox
-          if (
-            navigator.userAgent.toLowerCase().indexOf("firefox") > -1 &&
-            !firefoxClipboardNotificatoinShown
-          ) {
-            firefoxClipboardNotificatoinShown = true;
-            Notifications.add(
-              "On Firefox you can enable the asyncClipboard.clipboardItem permission in about:config to enable copying straight to the clipboard",
-              0,
-              {
-                duration: 10,
-              }
-            );
-          }
-
-          Notifications.add(
-            "Could not save image to clipboard. Opening in new tab instead (make sure popups are allowed)",
-            0,
-            {
-              duration: 5,
-            }
-          );
-          open(URL.createObjectURL(blob));
-        } else {
-          Notifications.add(
-            Misc.createErrorMessage(e, "Error saving image to clipboard"),
-            -1
-          );
-        }
-      }
-      revertScreenshot();
-    });
-  } catch (e) {
-    Notifications.add(Misc.createErrorMessage(e, "Error creating image"), -1);
-    revertScreenshot();
-  }
-  setTimeout(() => {
-    revertScreenshot();
-  }, 3000);
-}
-
-export function updateWordElement(
-  showError = !Config.blindMode,
+export async function updateActiveWordLetters(
   inputOverride?: string
-): void {
-  const input = inputOverride || TestInput.input.current;
-  const wordAtIndex = <Element>document.querySelector("#words .word.active");
+): Promise<void> {
+  const input = inputOverride ?? TestInput.input.current;
   const currentWord = TestWords.words.getCurrent();
   if (!currentWord && Config.mode !== "zen") return;
   let ret = "";
+  const activeWord =
+    document.querySelectorAll<HTMLElement>("#words .word")?.[
+      TestState.activeWordIndex - TestState.removedUIWordCount
+    ];
+  if (!activeWord) return;
+  const hintIndices: number[][] = [];
 
   let newlineafter = false;
 
   if (Config.mode === "zen") {
-    for (let i = 0; i < TestInput.input.current.length; i++) {
-      if (TestInput.input.current[i] === "\t") {
+    for (const char of TestInput.input.current) {
+      if (char === "\t") {
         ret += `<letter class='tabChar correct' style="opacity: 0"><i class="fas fa-long-arrow-alt-right fa-fw"></i></letter>`;
-      } else if (TestInput.input.current[i] === "\n") {
+      } else if (char === "\n") {
         newlineafter = true;
         ret += `<letter class='nlChar correct' style="opacity: 0"><i class="fas fa-level-down-alt fa-rotate-90 fa-fw"></i></letter>`;
       } else {
-        ret += `<letter class="correct">${TestInput.input.current[i]}</letter>`;
+        ret += `<letter class="correct">${char}</letter>`;
       }
+    }
+    if (TestInput.input.current === "") {
+      ret += `<letter class='invisible'>_</letter>`;
     }
   } else {
     let correctSoFar = false;
@@ -571,6 +736,7 @@ export function updateWordElement(
         : input.length;
       if (
         input.search(Misc.trailingComposeChars) < currentWord.length &&
+        // eslint-disable-next-line @typescript-eslint/prefer-string-starts-ends-with
         currentWord.slice(0, inputWithoutComposeLength) ===
           input.slice(0, inputWithoutComposeLength)
       ) {
@@ -588,6 +754,7 @@ export function updateWordElement(
       if (
         input.search(Misc.trailingComposeChars) <
           Hangul.d(koCurrentWord).length &&
+        // eslint-disable-next-line @typescript-eslint/prefer-string-starts-ends-with
         koCurrentWord.slice(0, inputWithoutComposeLength) ===
           koInput.slice(0, inputWithoutComposeLength)
       ) {
@@ -595,27 +762,17 @@ export function updateWordElement(
       }
     }
 
-    let wordHighlightClassString = correctSoFar ? "correct" : "incorrect";
+    const funbox = findSingleActiveFunboxWithFunction("getWordHtml");
 
-    if (Config.blindMode) {
-      wordHighlightClassString = "correct";
-    }
+    const inputChars = Strings.splitIntoCharacters(input);
+    const currentWordChars = Strings.splitIntoCharacters(currentWord);
+    for (let i = 0; i < inputChars.length; i++) {
+      const charCorrect = currentWordChars[i] === inputChars[i];
 
-    const funbox = FunboxList.get(Config.funbox).find(
-      (f) => f.functions?.getWordHtml
-    );
-    for (let i = 0; i < input.length; i++) {
-      const charCorrect = currentWord[i] === input[i];
-
-      let correctClass = "correct";
-      if (Config.highlightMode === "off") {
-        correctClass = "";
-      }
-
-      let currentLetter = currentWord[i];
+      let currentLetter = currentWordChars[i] as string;
       let tabChar = "";
       let nlChar = "";
-      if (funbox?.functions?.getWordHtml) {
+      if (funbox) {
         const cl = funbox.functions.getWordHtml(currentLetter);
         if (cl !== "") {
           currentLetter = cl;
@@ -629,237 +786,450 @@ export function updateWordElement(
       }
 
       if (charCorrect) {
-        ret += `<letter class="${
-          Config.highlightMode === "word"
-            ? wordHighlightClassString
-            : correctClass
-        } ${tabChar}${nlChar}">${currentLetter}</letter>`;
+        ret += `<letter class="correct ${tabChar}${nlChar}">${currentLetter}</letter>`;
       } else if (
         currentLetter !== undefined &&
         CompositionState.getComposing() &&
         i >= CompositionState.getStartPos() &&
         !(containsKorean && !correctSoFar)
       ) {
-        ret += `<letter class="${
-          Config.highlightMode === "word" ? wordHighlightClassString : ""
-        } dead">${currentLetter}</letter>`;
-      } else if (!showError) {
-        if (currentLetter !== undefined) {
-          ret += `<letter class="${
-            Config.highlightMode === "word"
-              ? wordHighlightClassString
-              : correctClass
-          } ${tabChar}${nlChar}">${currentLetter}</letter>`;
-        }
+        ret += `<letter class="dead">${
+          Config.indicateTypos === "replace"
+            ? inputChars[i] === " "
+              ? "_"
+              : inputChars[i]
+            : currentLetter
+        }</letter>`;
       } else if (currentLetter === undefined) {
-        if (!Config.hideExtraLetters) {
-          let letter = input[i];
-          if (letter === " " || letter === "\t" || letter === "\n") {
-            letter = "_";
-          }
-          ret += `<letter class="${
-            Config.highlightMode === "word"
-              ? wordHighlightClassString
-              : "incorrect"
-          } extra ${tabChar}${nlChar}">${letter}</letter>`;
+        let letter = inputChars[i];
+        if (letter === " " || letter === "\t" || letter === "\n") {
+          letter = "_";
         }
+        ret += `<letter class="incorrect extra ${tabChar}${nlChar}">${letter}</letter>`;
       } else {
         ret +=
-          `<letter class="${
-            Config.highlightMode === "word"
-              ? wordHighlightClassString
-              : "incorrect"
-          } ${tabChar}${nlChar}">` +
+          `<letter class="incorrect ${tabChar}${nlChar}">` +
           (Config.indicateTypos === "replace"
-            ? input[i] === " "
+            ? inputChars[i] === " "
               ? "_"
-              : input[i]
+              : inputChars[i]
             : currentLetter) +
-          (Config.indicateTypos === "below" ? `<hint>${input[i]}</hint>` : "") +
           "</letter>";
+        if (Config.indicateTypos === "below") {
+          const lastBlock = hintIndices[hintIndices.length - 1];
+          if (lastBlock && lastBlock[lastBlock.length - 1] === i - 1)
+            lastBlock.push(i);
+          else hintIndices.push([i]);
+        }
       }
     }
 
-    for (let i = input.length; i < currentWord.length; i++) {
+    for (let i = inputChars.length; i < currentWordChars.length; i++) {
+      const currentLetter = currentWordChars[i];
       if (funbox?.functions?.getWordHtml) {
-        ret += funbox.functions.getWordHtml(currentWord[i], true);
-      } else if (currentWord[i] === "\t") {
+        ret += funbox.functions.getWordHtml(currentLetter as string, true);
+      } else if (currentLetter === "\t") {
         ret += `<letter class='tabChar'><i class="fas fa-long-arrow-alt-right fa-fw"></i></letter>`;
-      } else if (currentWord[i] === "\n") {
+      } else if (currentLetter === "\n") {
         ret += `<letter class='nlChar'><i class="fas fa-level-down-alt fa-rotate-90 fa-fw"></i></letter>`;
       } else {
-        ret +=
-          `<letter class="${
-            Config.highlightMode === "word" ? wordHighlightClassString : ""
-          }">` +
-          currentWord[i] +
-          "</letter>";
-      }
-    }
-
-    if (Config.highlightMode === "letter" && Config.hideExtraLetters) {
-      if (input.length > currentWord.length && !Config.blindMode) {
-        wordAtIndex.classList.add("error");
-      } else if (input.length === currentWord.length) {
-        wordAtIndex.classList.remove("error");
+        ret += `<letter>` + currentLetter + "</letter>";
       }
     }
   }
-  wordAtIndex.innerHTML = ret;
-  if (newlineafter) $("#words").append("<div class='newline'></div>");
+
+  activeWord.innerHTML = ret;
+
+  if (hintIndices?.length) {
+    const activeWordLetters = activeWord.querySelectorAll("letter");
+    const hintsHtml = createHintsHtml(hintIndices, activeWordLetters, input);
+    activeWord.insertAdjacentHTML("beforeend", hintsHtml);
+    const hintElements = activeWord.getElementsByTagName("hint");
+    await joinOverlappingHints(hintIndices, activeWordLetters, hintElements);
+  }
+
+  if (newlineafter)
+    $("#words").append(
+      "<div class='beforeNewline'></div><div class='newline'></div><div class='afterNewline'></div>"
+    );
+  if (Config.tapeMode !== "off") {
+    void scrollTape();
+  }
 }
 
-export function scrollTape(): void {
-  const wordsWrapperWidth = (<HTMLElement>(
-    document.querySelector("#wordsWrapper")
-  )).offsetWidth;
-  let fullWordsWidth = 0;
-  const toHide: JQuery<HTMLElement>[] = [];
-  let widthToHide = 0;
-  if (currentWordElementIndex > 0) {
-    for (let i = 0; i < currentWordElementIndex; i++) {
-      const word = <HTMLElement>document.querySelectorAll("#words .word")[i];
-      fullWordsWidth += $(word).outerWidth(true) ?? 0;
-      const forWordLeft = Math.floor(word.offsetLeft);
-      const forWordWidth = Math.floor(word.offsetWidth);
-      if (forWordLeft < 0 - forWordWidth) {
-        const toPush = $($("#words .word")[i]);
-        toHide.push(toPush);
-        widthToHide += toPush.outerWidth(true) ?? 0;
-      }
-    }
-    if (toHide.length > 0) {
-      currentWordElementIndex -= toHide.length;
-      toHide.forEach((e) => e.remove());
-      fullWordsWidth -= widthToHide;
-      const currentMargin = parseInt($("#words").css("margin-left"), 10);
-      $("#words").css("margin-left", `${currentMargin + widthToHide}px`);
-    }
-  }
-  let currentWordWidth = 0;
-  if (Config.tapeMode === "letter") {
-    if (TestInput.input.current.length > 0) {
-      for (let i = 0; i < TestInput.input.current.length; i++) {
-        const words = document.querySelectorAll("#words .word");
-        currentWordWidth +=
-          $(
-            words[currentWordElementIndex].querySelectorAll("letter")[i]
-          ).outerWidth(true) ?? 0;
-      }
-    }
-  }
-  const newMargin = wordsWrapperWidth / 2 - (fullWordsWidth + currentWordWidth);
-  if (Config.smoothLineScroll) {
-    $("#words")
-      .stop(true, false)
-      .animate(
-        {
-          marginLeft: newMargin,
-        },
-        SlowTimer.get() ? 0 : 125
-      );
+// this is needed in tape mode because sometimes we want the newline character to appear above the next line
+// and sometimes we want it to be shifted to the left
+// (for example if the newline is typed incorrectly, or there are any extra letters after it)
+function getNlCharWidth(
+  lastWordInLine?: Element | HTMLElement,
+  checkIfIncorrect = true
+): number {
+  let nlChar: HTMLElement | null;
+  if (lastWordInLine) {
+    nlChar = lastWordInLine.querySelector<HTMLElement>("letter.nlChar");
   } else {
-    $("#words").css("margin-left", `${newMargin}px`);
+    nlChar = document.querySelector<HTMLElement>(
+      "#words > .word > letter.nlChar"
+    );
   }
+  if (!nlChar) return 0;
+  if (checkIfIncorrect && nlChar.classList.contains("incorrect")) return 0;
+  const letterComputedStyle = window.getComputedStyle(nlChar);
+  const letterMargin =
+    parseFloat(letterComputedStyle.marginLeft) +
+    parseFloat(letterComputedStyle.marginRight);
+  return nlChar.offsetWidth + letterMargin;
+}
+
+export async function scrollTape(
+  noRemove = false,
+  afterCompleteFn?: () => void
+): Promise<void> {
+  if (ActivePage.get() !== "test" || resultVisible) return;
+
+  await centeringActiveLine;
+
+  const currentLang = await JSONData.getCurrentLanguage(Config.language);
+  const isLanguageRTL = currentLang.rightToLeft;
+
+  // index of the active word in the collection of .word elements
+  const wordElementIndex =
+    TestState.activeWordIndex - TestState.removedUIWordCount;
+  const wordsWrapperWidth = (
+    document.querySelector("#wordsWrapper") as HTMLElement
+  ).offsetWidth;
+  const wordsEl = document.getElementById("words") as HTMLElement;
+  const wordsChildrenArr = [...wordsEl.children] as HTMLElement[];
+  const wordElements = wordsEl.getElementsByClassName("word");
+  const activeWordEl = wordElements[wordElementIndex] as
+    | HTMLElement
+    | undefined;
+  if (!activeWordEl) return;
+  const afterNewLineEls = wordsEl.getElementsByClassName("afterNewline");
+
+  let wordsWidthBeforeActive = 0;
+  let fullLineWidths = 0;
+  let wordsToRemoveCount = 0;
+  let leadingNewLine = false;
+  let lastAfterNewLineElement = undefined;
+  let widthRemoved = 0;
+  const widthRemovedFromLine: number[] = [];
+  const afterNewlinesNewMargins: number[] = [];
+  const toRemove: HTMLElement[] = [];
+
+  /* remove leading `.afterNewline` elements */
+  for (const child of wordsChildrenArr) {
+    if (child.classList.contains("word")) {
+      // only last leading `.afterNewline` element pushes `.word`s to right
+      if (lastAfterNewLineElement) {
+        widthRemoved += parseFloat(lastAfterNewLineElement.style.marginLeft);
+      }
+      break;
+    } else if (child.classList.contains("afterNewline")) {
+      toRemove.push(child);
+      leadingNewLine = true;
+      lastAfterNewLineElement = child;
+    }
+  }
+
+  /* get last element to loop over */
+  let lastElementIndex: number;
+  // index of the active word in all #words.children
+  // (which contains .word/.newline/.beforeNewline/.afterNewline elements)
+  const activeWordIndex = wordsChildrenArr.indexOf(activeWordEl);
+  // this will be 0 or 1
+  const newLinesBeforeActiveWord = wordsChildrenArr
+    .slice(0, activeWordIndex)
+    .filter((child) => child.classList.contains("afterNewline")).length;
+  // the second `.afterNewline` after active word is visible during line jump
+  let lastVisibleAfterNewline = afterNewLineEls[
+    newLinesBeforeActiveWord + 1
+  ] as HTMLElement | undefined;
+  if (lastVisibleAfterNewline) {
+    lastElementIndex = wordsChildrenArr.indexOf(lastVisibleAfterNewline);
+  } else {
+    lastVisibleAfterNewline = afterNewLineEls[newLinesBeforeActiveWord] as
+      | HTMLElement
+      | undefined;
+    if (lastVisibleAfterNewline) {
+      lastElementIndex = wordsChildrenArr.indexOf(lastVisibleAfterNewline);
+    } else {
+      lastElementIndex = activeWordIndex - 1;
+    }
+  }
+
+  const wordRightMargin = parseFloat(
+    window.getComputedStyle(activeWordEl).marginRight
+  );
+
+  /*calculate .afterNewline & #words new margins + determine elements to remove*/
+  for (let i = 0; i <= lastElementIndex; i++) {
+    const child = wordsChildrenArr[i] as HTMLElement;
+    if (child.classList.contains("word")) {
+      leadingNewLine = false;
+      const wordOuterWidth = $(child).outerWidth(true) ?? 0;
+      const forWordLeft = Math.floor(child.offsetLeft);
+      const forWordWidth = Math.floor(child.offsetWidth);
+      if (
+        (!isLanguageRTL && forWordLeft < 0 - forWordWidth) ||
+        (isLanguageRTL && forWordLeft > wordsWrapperWidth)
+      ) {
+        toRemove.push(child);
+        widthRemoved += wordOuterWidth;
+        wordsToRemoveCount++;
+      } else {
+        fullLineWidths += wordOuterWidth;
+        if (i < activeWordIndex) wordsWidthBeforeActive = fullLineWidths;
+      }
+    } else if (child.classList.contains("afterNewline")) {
+      if (leadingNewLine) continue;
+      const nlCharWidth = getNlCharWidth(wordsChildrenArr[i - 3]);
+      fullLineWidths -= nlCharWidth + wordRightMargin;
+      if (i < activeWordIndex) wordsWidthBeforeActive = fullLineWidths;
+
+      /** words that are wider than limit can cause a barely visible bottom line shifting,
+       * increase limit if that ever happens, but keep the limit because browsers hate
+       * ridiculously wide margins which may cause the words to not be displayed
+       */
+      const limit = 3 * wordsEl.offsetWidth;
+      if (fullLineWidths < limit) {
+        afterNewlinesNewMargins.push(fullLineWidths);
+        widthRemovedFromLine.push(widthRemoved);
+      } else {
+        afterNewlinesNewMargins.push(limit);
+        widthRemovedFromLine.push(widthRemoved);
+        if (i < lastElementIndex) {
+          // for the second .afterNewline after active word
+          afterNewlinesNewMargins.push(limit);
+          widthRemovedFromLine.push(widthRemoved);
+        }
+        break;
+      }
+    }
+  }
+
+  /* remove overflown elements */
+  if (toRemove.length > 0 && !noRemove) {
+    for (const el of toRemove) el.remove();
+    TestState.incrementRemovedUIWordCount(wordsToRemoveCount);
+    for (let i = 0; i < widthRemovedFromLine.length; i++) {
+      const afterNewlineEl = afterNewLineEls[i] as HTMLElement;
+      const currentLineIndent =
+        parseFloat(afterNewlineEl.style.marginLeft) || 0;
+      afterNewlineEl.style.marginLeft = `${
+        currentLineIndent - (widthRemovedFromLine[i] ?? 0)
+      }px`;
+    }
+    if (isLanguageRTL) widthRemoved *= -1;
+    const currentWordsMargin = parseFloat(wordsEl.style.marginLeft) || 0;
+    wordsEl.style.marginLeft = `${currentWordsMargin + widthRemoved}px`;
+  }
+
+  /* calculate current word width to add to #words margin */
+  let currentWordWidth = 0;
+  const inputLength = TestInput.input.current.length;
+  if (Config.tapeMode === "letter" && inputLength > 0) {
+    const letters = activeWordEl.querySelectorAll("letter");
+    let lastPositiveLetterWidth = 0;
+    for (let i = 0; i < inputLength; i++) {
+      const letter = letters[i] as HTMLElement;
+      if (
+        (Config.blindMode || Config.hideExtraLetters) &&
+        letter.classList.contains("extra")
+      ) {
+        continue;
+      }
+      const letterOuterWidth = $(letter).outerWidth(true) ?? 0;
+      currentWordWidth += letterOuterWidth;
+      if (letterOuterWidth > 0) lastPositiveLetterWidth = letterOuterWidth;
+    }
+    // if current letter has zero width move the tape to previous positive width letter
+    if ($(letters[inputLength] as Element).outerWidth(true) === 0)
+      currentWordWidth -= lastPositiveLetterWidth;
+  }
+
+  /* change to new #words & .afterNewline margins */
+  let newMargin =
+    wordsWrapperWidth * (Config.tapeMargin / 100) -
+    wordsWidthBeforeActive -
+    currentWordWidth;
+  if (isLanguageRTL) newMargin = wordRightMargin - newMargin;
+
+  const jqWords = $(wordsEl);
+  if (Config.smoothLineScroll) {
+    jqWords.stop("leftMargin", true, false).animate(
+      {
+        marginLeft: newMargin,
+      },
+      {
+        duration: SlowTimer.get() ? 0 : 125,
+        queue: "leftMargin",
+        complete: afterCompleteFn,
+      }
+    );
+    jqWords.dequeue("leftMargin");
+    for (let i = 0; i < afterNewlinesNewMargins.length; i++) {
+      const newMargin = afterNewlinesNewMargins[i] ?? 0;
+      $(afterNewLineEls[i] as Element)
+        .stop(true, false)
+        .animate({ marginLeft: newMargin }, SlowTimer.get() ? 0 : 125);
+    }
+  } else {
+    wordsEl.style.marginLeft = `${newMargin}px`;
+    for (let i = 0; i < afterNewlinesNewMargins.length; i++) {
+      const newMargin = afterNewlinesNewMargins[i] ?? 0;
+      (afterNewLineEls[i] as HTMLElement).style.marginLeft = `${newMargin}px`;
+    }
+    if (afterCompleteFn) afterCompleteFn();
+  }
+}
+
+export function updatePremid(): void {
+  const mode2 = Misc.getMode2(Config, TestWords.currentQuote);
+  let fbtext = "";
+  if (Config.funbox.length > 0) {
+    fbtext = " " + Config.funbox.join(" ");
+  }
+  $(".pageTest #premidTestMode").text(
+    `${Config.mode} ${mode2} ${Strings.getLanguageDisplayString(
+      Config.language
+    )}${fbtext}`
+  );
+  $(".pageTest #premidSecondsLeft").text(Config.time);
+}
+
+function removeElementsBeforeWord(
+  lastElementToRemoveIndex: number,
+  wordsChildren?: Element[] | HTMLCollection
+): number {
+  // remove all elements before lastElementToRemove (included)
+  // and return removed `.word`s count
+  if (!wordsChildren) {
+    wordsChildren = document.getElementById("words")?.children;
+    if (!wordsChildren) return 0;
+  }
+
+  let removedWords = 0;
+  for (let i = 0; i <= lastElementToRemoveIndex; i++) {
+    const child = wordsChildren[i];
+    if (!child || !child.isConnected) continue;
+    if (child.classList.contains("word")) removedWords++;
+    child.remove();
+  }
+  return removedWords;
 }
 
 let currentLinesAnimating = 0;
 
-export function lineJump(currentTop: number): void {
+export async function lineJump(
+  currentTop: number,
+  force = false
+): Promise<void> {
+  const { resolve, promise } = Misc.promiseWithResolvers<void>();
+
   //last word of the line
-  if (
-    (Config.tapeMode === "off" && currentTestLine > 0) ||
-    (Config.tapeMode !== "off" && currentTestLine >= 0)
-  ) {
+  if (currentTestLine > 0 || force) {
     const hideBound = currentTop;
 
-    const toHide: JQuery<HTMLElement>[] = [];
-    const wordElements = $("#words .word");
-    for (let i = 0; i < currentWordElementIndex; i++) {
-      if ($(wordElements[i]).hasClass("hidden")) continue;
-      const forWordTop = Math.floor(wordElements[i].offsetTop);
-      if (
-        forWordTop <
-        (Config.tapeMode === "off" ? hideBound - 10 : hideBound + 10)
-      ) {
-        toHide.push($($("#words .word")[i]));
+    // index of the active word in the collection of .word elements
+    const wordElementIndex =
+      TestState.activeWordIndex - TestState.removedUIWordCount;
+    const wordsEl = document.getElementById("words") as HTMLElement;
+    const wordsChildrenArr = [...wordsEl.children];
+    const wordElements = wordsEl.querySelectorAll(".word");
+    const activeWordEl = wordElements[wordElementIndex];
+    if (!activeWordEl) {
+      resolve();
+      return;
+    }
+
+    // index of the active word in all #words.children
+    // (which contains .word/.newline/.beforeNewline/.afterNewline elements)
+    const activeWordIndex = wordsChildrenArr.indexOf(activeWordEl);
+
+    let lastElementToRemoveIndex: number | undefined = undefined;
+    for (let i = activeWordIndex - 1; i >= 0; i--) {
+      const child = wordsChildrenArr[i] as HTMLElement;
+      if (child.classList.contains("hidden")) continue;
+      if (Math.floor(child.offsetTop) < hideBound) {
+        if (child.classList.contains("word")) {
+          lastElementToRemoveIndex = i;
+          break;
+        } else if (child.classList.contains("beforeNewline")) {
+          // set it to .newline but check .beforeNewline.offsetTop
+          // because it's more reliable
+          lastElementToRemoveIndex = i + 1;
+          break;
+        }
       }
     }
-    const wordHeight = <number>(
-      $(<Element>document.querySelector(".word")).outerHeight(true)
-    );
-    if (Config.smoothLineScroll && toHide.length > 0) {
+
+    const wordHeight = $(activeWordEl).outerHeight(true) as number;
+    const paceCaretElement = document.querySelector(
+      "#paceCaret"
+    ) as HTMLElement;
+
+    if (lastElementToRemoveIndex === undefined) {
+      resolve();
+    } else if (Config.smoothLineScroll) {
       lineTransition = true;
-      const smoothScroller = $("#words .smoothScroller");
-      if (smoothScroller.length === 0) {
-        $("#words").prepend(
-          `<div class="smoothScroller" style="position: fixed;height:${wordHeight}px;width:100%"></div>`
-        );
-      } else {
-        smoothScroller.css(
-          "height",
-          `${(smoothScroller.outerHeight(true) ?? 0) + wordHeight}px`
-        );
-      }
-      $("#words .smoothScroller")
+
+      $(paceCaretElement)
         .stop(true, false)
         .animate(
           {
-            height: 0,
-          },
-          SlowTimer.get() ? 0 : 125,
-          () => {
-            $("#words .smoothScroller").remove();
-          }
-        );
-      $("#paceCaret")
-        .stop(true, false)
-        .animate(
-          {
-            top:
-              (<HTMLElement>document.querySelector("#paceCaret"))?.offsetTop -
-              wordHeight,
+            top: paceCaretElement?.offsetTop - wordHeight,
           },
           SlowTimer.get() ? 0 : 125
         );
 
-      const newCss: { [key: string]: string } = {
-        marginTop: `-${wordHeight * (currentLinesAnimating + 1)}px`,
+      const scrollDistance = TestState.lineScrollDistance + wordHeight;
+      TestState.setLineScrollDistance(scrollDistance);
+      currentLinesAnimating++;
+      const newCss: Record<string, string> = {
+        marginTop: `-${wordHeight * currentLinesAnimating}px`,
       };
 
-      if (Config.tapeMode !== "off") {
-        const wordsWrapperWidth = (<HTMLElement>(
-          document.querySelector("#wordsWrapper")
-        )).offsetWidth;
-        const newMargin = wordsWrapperWidth / 2;
-        newCss["marginLeft"] = `${newMargin}px`;
-      }
-      currentLinesAnimating++;
-      $("#words")
-        .stop(true, false)
-        .animate(newCss, SlowTimer.get() ? 0 : 125, () => {
+      const jqWords = $(wordsEl);
+      jqWords.stop("topMargin", true, false).animate(newCss, {
+        duration: SlowTimer.get() ? 0 : 125,
+        queue: "topMargin",
+        step: (now, fx) => {
+          const completionRate = (now - fx.start) / (fx.end - fx.start);
+          TestState.setLineScrollDistance(
+            scrollDistance * (1 - completionRate)
+          );
+        },
+        complete: () => {
           currentLinesAnimating = 0;
-          activeWordTop = (<HTMLElement>(
-            document.querySelector("#words .active")
-          )).offsetTop;
-
-          currentWordElementIndex -= toHide.length;
+          TestState.setLineScrollDistance(0);
+          activeWordTop =
+            document.querySelectorAll<HTMLElement>("#words .word")?.[
+              wordElementIndex
+            ]?.offsetTop ?? 0;
+          TestState.incrementRemovedUIWordCount(
+            removeElementsBeforeWord(lastElementToRemoveIndex, wordsChildrenArr)
+          );
+          wordsEl.style.marginTop = "0";
           lineTransition = false;
-          toHide.forEach((el) => el.remove());
-          $("#words").css("marginTop", "0");
-        });
-    } else {
-      toHide.forEach((el) => el.remove());
-      currentWordElementIndex -= toHide.length;
-      $("#paceCaret").css({
-        top:
-          (<HTMLElement>document.querySelector("#paceCaret")).offsetTop -
-          wordHeight,
+          resolve();
+        },
       });
+      jqWords.dequeue("topMargin");
+    } else {
+      TestState.incrementRemovedUIWordCount(
+        removeElementsBeforeWord(lastElementToRemoveIndex, wordsChildrenArr)
+      );
+      paceCaretElement.style.top = `${
+        paceCaretElement.offsetTop - wordHeight
+      }px`;
+      resolve();
     }
   }
   currentTestLine++;
-  updateWordsHeight();
+  updateWordsWrapperHeight();
+
+  return promise;
 }
 
 export function setRightToLeft(isEnabled: boolean): void {
@@ -875,7 +1245,7 @@ export function setRightToLeft(isEnabled: boolean): void {
 }
 
 export function setLigatures(isEnabled: boolean): void {
-  if (isEnabled) {
+  if (isEnabled || Config.mode === "custom" || Config.mode === "zen") {
     $("#words").addClass("withLigatures");
     $("#resultWordsHistory .words").addClass("withLigatures");
     $("#resultReplay .words").addClass("withLigatures");
@@ -889,93 +1259,68 @@ export function setLigatures(isEnabled: boolean): void {
 async function loadWordsHistory(): Promise<boolean> {
   $("#resultWordsHistory .words").empty();
   let wordsHTML = "";
-  for (let i = 0; i < TestInput.input.history.length + 2; i++) {
-    const input = <string>TestInput.input.getHistory(i);
+  for (let i = 0; i < TestInput.input.getHistory().length + 2; i++) {
+    const input = TestInput.input.getHistory(i);
+    const corrected = TestInput.corrected.getHistory(i);
     const word = TestWords.words.get(i);
     const containsKorean =
       input?.match(
         /[\uac00-\ud7af]|[\u1100-\u11ff]|[\u3130-\u318f]|[\ua960-\ua97f]|[\ud7b0-\ud7ff]/g
-      ) ||
+      ) !== null ||
       word?.match(
         /[\uac00-\ud7af]|[\u1100-\u11ff]|[\u3130-\u318f]|[\ua960-\ua97f]|[\ud7b0-\ud7ff]/g
-      );
+      ) !== null;
     let wordEl = "";
     try {
-      if (input === "") throw new Error("empty input word");
-      if (
-        TestInput.corrected.getHistory(i) !== undefined &&
-        TestInput.corrected.getHistory(i) !== ""
-      ) {
+      if (input === undefined || input === "") {
+        throw new Error("empty input word");
+      }
+
+      const errorClass = input !== word ? "error" : "";
+
+      if (corrected !== undefined && corrected !== "") {
         const correctedChar = !containsKorean
-          ? TestInput.corrected.getHistory(i)
-          : Hangul.assemble(TestInput.corrected.getHistory(i).split(""));
-        wordEl = `<div class='word nocursor' burst="${
+          ? corrected
+          : Hangul.assemble(corrected.split(""));
+        wordEl = `<div class='word nocursor ${errorClass}' burst="${
           TestInput.burstHistory[i]
         }" input="${correctedChar
           .replace(/"/g, "&quot;")
           .replace(/ /g, "_")}">`;
       } else {
-        wordEl = `<div class='word nocursor' burst="${
+        wordEl = `<div class='word nocursor ${errorClass}' burst="${
           TestInput.burstHistory[i]
         }" input="${input.replace(/"/g, "&quot;").replace(/ /g, "_")}">`;
       }
-      if (i === TestInput.input.history.length - 1) {
-        //last word
-        const wordstats = {
-          correct: 0,
-          incorrect: 0,
-          missed: 0,
-        };
-        const length = Config.mode === "zen" ? input.length : word.length;
-        for (let c = 0; c < length; c++) {
-          if (c < input.length) {
-            //on char that still has a word list pair
-            if (Config.mode === "zen" || input[c] === word[c]) {
-              wordstats.correct++;
-            } else {
-              wordstats.incorrect++;
-            }
-          } else {
-            //on char that is extra
-            wordstats.missed++;
-          }
-        }
-        if (wordstats.incorrect !== 0 || Config.mode !== "time") {
-          if (Config.mode !== "zen" && input !== word) {
-            wordEl = `<div class='word nocursor error' burst="${
-              TestInput.burstHistory[i]
-            }" input="${input.replace(/"/g, "&quot;").replace(/ /g, "_")}">`;
-          }
-        }
-      } else {
-        if (Config.mode !== "zen" && input !== word) {
-          wordEl = `<div class='word nocursor error' burst="${
-            TestInput.burstHistory[i]
-          }" input="${input.replace(/"/g, "&quot;").replace(/ /g, "_")}">`;
-        }
-      }
+
+      const inputCharacters = Strings.splitIntoCharacters(input);
+      const wordCharacters = Strings.splitIntoCharacters(word);
+      const correctedCharacters = Strings.splitIntoCharacters(corrected ?? "");
 
       let loop;
       if (Config.mode === "zen" || input.length > word.length) {
         //input is longer - extra characters possible (loop over input)
-        loop = input.length;
+        loop = inputCharacters.length;
       } else {
         //input is shorter or equal (loop over word list)
-        loop = word.length;
+        loop = wordCharacters.length;
       }
+
+      if (corrected === undefined) throw new Error("empty corrected word");
+
       for (let c = 0; c < loop; c++) {
         let correctedChar;
         try {
           correctedChar = !containsKorean
-            ? TestInput.corrected.getHistory(i)[c]
-            : Hangul.assemble(TestInput.corrected.getHistory(i).split(""))[c];
+            ? correctedCharacters[c]
+            : Hangul.assemble(corrected.split(""))[c];
         } catch (e) {
           correctedChar = undefined;
         }
         let extraCorrected = "";
         const historyWord: string = !containsKorean
-          ? TestInput.corrected.getHistory(i)
-          : Hangul.assemble(TestInput.corrected.getHistory(i).split(""));
+          ? corrected
+          : Hangul.assemble(corrected.split(""));
         if (
           c + 1 === loop &&
           historyWord !== undefined &&
@@ -983,41 +1328,50 @@ async function loadWordsHistory(): Promise<boolean> {
         ) {
           extraCorrected = "extraCorrected";
         }
-        if (Config.mode === "zen" || word[c] !== undefined) {
-          if (Config.mode === "zen" || input[c] === word[c]) {
-            if (correctedChar === input[c] || correctedChar === undefined) {
-              wordEl += `<letter class="correct ${extraCorrected}">${input[c]}</letter>`;
+        if (Config.mode === "zen" || wordCharacters[c] !== undefined) {
+          if (
+            Config.mode === "zen" ||
+            inputCharacters[c] === wordCharacters[c]
+          ) {
+            if (
+              correctedChar === inputCharacters[c] ||
+              correctedChar === undefined
+            ) {
+              wordEl += `<letter class="correct ${extraCorrected}">${inputCharacters[c]}</letter>`;
             } else {
               wordEl +=
                 `<letter class="corrected ${extraCorrected}">` +
-                input[c] +
+                inputCharacters[c] +
                 "</letter>";
             }
           } else {
-            if (input[c] === TestInput.input.current) {
+            if (inputCharacters[c] === TestInput.input.current) {
               wordEl +=
                 `<letter class='correct ${extraCorrected}'>` +
-                word[c] +
+                wordCharacters[c] +
                 "</letter>";
-            } else if (input[c] === undefined) {
-              wordEl += "<letter>" + word[c] + "</letter>";
+            } else if (inputCharacters[c] === undefined) {
+              wordEl += "<letter>" + wordCharacters[c] + "</letter>";
             } else {
               wordEl +=
                 `<letter class="incorrect ${extraCorrected}">` +
-                word[c] +
+                wordCharacters[c] +
                 "</letter>";
             }
           }
         } else {
-          wordEl += '<letter class="incorrect extra">' + input[c] + "</letter>";
+          wordEl +=
+            '<letter class="incorrect extra">' +
+            inputCharacters[c] +
+            "</letter>";
         }
       }
       wordEl += "</div>";
     } catch (e) {
       try {
         wordEl = "<div class='word'>";
-        for (let c = 0; c < word.length; c++) {
-          wordEl += "<letter>" + word[c] + "</letter>";
+        for (const char of word) {
+          wordEl += "<letter>" + char + "</letter>";
         }
         wordEl += "</div>";
       } catch {}
@@ -1035,26 +1389,26 @@ export function toggleResultWords(noAnimation = false): void {
     if ($("#resultWordsHistory").stop(true, true).hasClass("hidden")) {
       //show
 
-      if (!$("#showWordHistoryButton").hasClass("loaded")) {
+      if ($("#resultWordsHistory .words .word").length === 0) {
         $("#words").html(
           `<div class="preloader"><i class="fas fa-fw fa-spin fa-circle-notch"></i></div>`
         );
-        loadWordsHistory().then(() => {
+        void loadWordsHistory().then(() => {
           if (Config.burstHeatmap) {
-            applyBurstHeatmap();
+            void applyBurstHeatmap();
           }
           $("#resultWordsHistory")
             .removeClass("hidden")
             .css("display", "none")
             .slideDown(noAnimation ? 0 : 250, () => {
               if (Config.burstHeatmap) {
-                applyBurstHeatmap();
+                void applyBurstHeatmap();
               }
             });
         });
       } else {
         if (Config.burstHeatmap) {
-          applyBurstHeatmap();
+          void applyBurstHeatmap();
         }
         $("#resultWordsHistory")
           .removeClass("hidden")
@@ -1078,34 +1432,20 @@ export async function applyBurstHeatmap(): Promise<void> {
     let burstlist = [...TestInput.burstHistory];
 
     burstlist = burstlist.filter((x) => x !== Infinity);
-    burstlist = burstlist.filter((x) => x < 350);
+    burstlist = burstlist.filter((x) => x < 500);
 
     const typingSpeedUnit = getTypingSpeedUnit(Config.typingSpeedUnit);
     burstlist.forEach((burst, index) => {
       burstlist[index] = Math.round(typingSpeedUnit.fromWpm(burst));
     });
 
-    if (
-      TestInput.input.getHistory(TestInput.input.getHistory().length - 1)
-        ?.length !== TestWords.words.getCurrent()?.length
-    ) {
-      burstlist = burstlist.splice(0, burstlist.length - 1);
-    }
-
-    const median = Misc.median(burstlist);
-    const adatm: number[] = [];
-    burstlist.forEach((burst) => {
-      adatm.push(Math.abs(median - burst));
-    });
-    const step = Misc.mean(adatm);
-
     const themeColors = await ThemeColors.getAll();
 
     let colors = [
       themeColors.colorfulError,
-      Misc.blendTwoHexColors(themeColors.colorfulError, themeColors.text, 0.5),
+      blendTwoHexColors(themeColors.colorfulError, themeColors.text, 0.5),
       themeColors.text,
-      Misc.blendTwoHexColors(themeColors.main, themeColors.text, 0.5),
+      blendTwoHexColors(themeColors.main, themeColors.text, 0.5),
       themeColors.main,
     ];
     let unreachedColor = themeColors.sub;
@@ -1113,17 +1453,16 @@ export async function applyBurstHeatmap(): Promise<void> {
     if (themeColors.main === themeColors.text) {
       colors = [
         themeColors.colorfulError,
-        Misc.blendTwoHexColors(
-          themeColors.colorfulError,
-          themeColors.text,
-          0.5
-        ),
+        blendTwoHexColors(themeColors.colorfulError, themeColors.text, 0.5),
         themeColors.sub,
-        Misc.blendTwoHexColors(themeColors.sub, themeColors.text, 0.5),
+        blendTwoHexColors(themeColors.sub, themeColors.text, 0.5),
         themeColors.main,
       ];
       unreachedColor = themeColors.subAlt;
     }
+
+    const burstlistSorted = burstlist.sort((a, b) => a - b);
+    const burstlistLength = burstlist.length;
 
     const steps = [
       {
@@ -1131,33 +1470,36 @@ export async function applyBurstHeatmap(): Promise<void> {
         colorId: 0,
       },
       {
-        val: median - step * 1.5,
+        val: burstlistSorted[(burstlistLength * 0.15) | 0] as number,
         colorId: 1,
       },
       {
-        val: median - step * 0.5,
+        val: burstlistSorted[(burstlistLength * 0.35) | 0] as number,
         colorId: 2,
       },
       {
-        val: median + step * 0.5,
+        val: burstlistSorted[(burstlistLength * 0.65) | 0] as number,
         colorId: 3,
       },
       {
-        val: median + step * 1.5,
+        val: burstlistSorted[(burstlistLength * 0.85) | 0] as number,
         colorId: 4,
       },
     ];
 
     steps.forEach((step, index) => {
+      const nextStep = steps[index + 1];
       let string = "";
-      if (index === 0) {
-        string = `<${Math.round(steps[index + 1].val)}`;
+      if (index === 0 && nextStep) {
+        string = `<${Math.round(nextStep.val)}`;
       } else if (index === 4) {
-        string = `${Math.round(step.val - 1)}+`;
-      } else {
-        string = `${Math.round(step.val)}-${
-          Math.round(steps[index + 1].val) - 1
-        }`;
+        string = `${Math.round(step.val)}+`;
+      } else if (nextStep) {
+        if (step.val !== nextStep.val) {
+          string = `${Math.round(step.val)}-${Math.round(nextStep.val) - 1}`;
+        } else {
+          string = `${Math.round(step.val)}-${Math.round(step.val)}`;
+        }
       }
 
       $("#resultWordsHistory .heatmapLegend .box" + index).html(
@@ -1170,21 +1512,21 @@ export async function applyBurstHeatmap(): Promise<void> {
       if (wordBurstAttr === undefined) {
         $(word).css("color", unreachedColor);
       } else {
-        let wordBurstVal = parseInt(wordBurstAttr as string);
+        let wordBurstVal = parseInt(wordBurstAttr);
         wordBurstVal = Math.round(
           getTypingSpeedUnit(Config.typingSpeedUnit).fromWpm(wordBurstVal)
         );
         steps.forEach((step) => {
           if (wordBurstVal >= step.val) {
             $(word).addClass("heatmapInherit");
-            $(word).css("color", colors[step.colorId]);
+            $(word).css("color", colors[step.colorId] as string);
           }
         });
       }
     });
 
     $("#resultWordsHistory .heatmapLegend .boxes .box").each((index, box) => {
-      $(box).css("background", colors[index]);
+      $(box).css("background", colors[index] as string);
     });
   } else {
     $("#resultWordsHistory .heatmapLegend").addClass("hidden");
@@ -1195,46 +1537,137 @@ export async function applyBurstHeatmap(): Promise<void> {
   }
 }
 
-export function highlightBadWord(index: number, showError: boolean): void {
-  if (!showError) return;
-  $($("#words .word")[index]).addClass("error");
+export function highlightBadWord(index: number): void {
+  $($("#words .word")[index] as HTMLElement).addClass("error");
 }
 
-export function highlightMode(mode?: MonkeyTypes.HighlightMode): void {
-  const existing =
-    $("#words")
-      ?.attr("class")
-      ?.split(/\s+/)
-      ?.filter((it) => !it.startsWith("highlight-")) || [];
-  if (mode != null) {
-    existing.push("highlight-" + mode.replaceAll("_", "-"));
+export function highlightAllLettersAsCorrect(wordIndex: number): void {
+  $($("#words .word")[wordIndex] as HTMLElement)
+    .find("letter")
+    .addClass("correct");
+}
+
+function updateWordsWidth(): void {
+  let css: Record<string, string> = {};
+  if (Config.tapeMode === "off") {
+    if (Config.maxLineWidth === 0) {
+      css = {
+        "max-width": "100%",
+      };
+    } else {
+      css = {
+        "max-width": Config.maxLineWidth + "ch",
+      };
+    }
+  } else {
+    if (Config.maxLineWidth === 0) {
+      css = {
+        "max-width": "100%",
+      };
+    } else {
+      css = {
+        "max-width": "100%",
+      };
+    }
   }
-
-  $("#words").attr("class", existing.join(" "));
+  const el = $("#typingTest");
+  el.css(css);
+  if (Config.maxLineWidth === 0) {
+    el.removeClass("full-width-padding").addClass("content");
+  } else {
+    el.removeClass("content").addClass("full-width-padding");
+  }
 }
 
-$(".pageTest").on("click", "#saveScreenshotButton", () => {
-  screenshot();
-});
+function updateLiveStatsMargin(): void {
+  if (Config.tapeMode === "off") {
+    $("#liveStatsMini").css({
+      "justify-content": "start",
+      "margin-left": "0.25em",
+    });
+  } else {
+    $("#liveStatsMini").css({
+      "justify-content": "center",
+      "margin-left": Config.tapeMargin + "%",
+    });
+  }
+}
+
+function updateLiveStatsOpacity(value: TimerOpacity): void {
+  $("#barTimerProgress").css("opacity", parseFloat(value as string));
+  $("#liveStatsTextTop").css("opacity", parseFloat(value as string));
+  $("#liveStatsTextBottom").css("opacity", parseFloat(value as string));
+  $("#liveStatsMini").css("opacity", parseFloat(value as string));
+}
+
+function updateLiveStatsColor(value: TimerColor): void {
+  $("#barTimerProgress").removeClass("timerSub");
+  $("#barTimerProgress").removeClass("timerText");
+  $("#barTimerProgress").removeClass("timerMain");
+
+  $("#liveStatsTextTop").removeClass("timerSub");
+  $("#liveStatsTextTop").removeClass("timerText");
+  $("#liveStatsTextTop").removeClass("timerMain");
+
+  $("#liveStatsTextBottom").removeClass("timerSub");
+  $("#liveStatsTextBottom").removeClass("timerText");
+  $("#liveStatsTextBottom").removeClass("timerMain");
+
+  $("#liveStatsMini").removeClass("timerSub");
+  $("#liveStatsMini").removeClass("timerText");
+  $("#liveStatsMini").removeClass("timerMain");
+
+  if (value === "main") {
+    $("#barTimerProgress").addClass("timerMain");
+    $("#liveStatsTextTop").addClass("timerMain");
+    $("#liveStatsTextBottom").addClass("timerMain");
+    $("#liveStatsMini").addClass("timerMain");
+  } else if (value === "sub") {
+    $("#barTimerProgress").addClass("timerSub");
+    $("#liveStatsTextTop").addClass("timerSub");
+    $("#liveStatsTextBottom").addClass("timerSub");
+    $("#liveStatsMini").addClass("timerSub");
+  } else if (value === "text") {
+    $("#barTimerProgress").addClass("timerText");
+    $("#liveStatsTextTop").addClass("timerText");
+    $("#liveStatsTextBottom").addClass("timerText");
+    $("#liveStatsMini").addClass("timerText");
+  }
+}
 
 $(".pageTest #copyWordsListButton").on("click", async () => {
+  let words;
+  if (Config.mode === "zen") {
+    words = TestInput.input.getHistory().join(" ");
+  } else {
+    words = TestWords.words
+      .get()
+      .slice(0, TestInput.input.getHistory().length)
+      .join(" ");
+  }
+  await copyToClipboard(words);
+});
+
+$(".pageTest #copyMissedWordsListButton").on("click", async () => {
+  let words;
+  if (Config.mode === "zen") {
+    words = TestInput.input.getHistory().join(" ");
+  } else {
+    words = Object.keys(TestInput.missedWords ?? {}).join(" ");
+  }
+  await copyToClipboard(words);
+});
+
+async function copyToClipboard(content: string): Promise<void> {
   try {
-    let words;
-    if (Config.mode === "zen") {
-      words = TestInput.input.history.join(" ");
-    } else {
-      words = (<string[]>TestWords.words.get())
-        .slice(0, TestInput.input.history.length)
-        .join(" ");
-    }
-    await navigator.clipboard.writeText(words);
+    await navigator.clipboard.writeText(content);
     Notifications.add("Copied to clipboard", 0, {
       duration: 2,
     });
   } catch (e) {
     Notifications.add("Could not copy to clipboard: " + e, -1);
   }
-});
+}
 
 $(".pageTest #toggleBurstHeatmap").on("click", async () => {
   UpdateConfig.setBurstHeatmap(!Config.burstHeatmap);
@@ -1257,7 +1690,7 @@ $(".pageTest #result #wpmChart").on("mouseenter", () => {
 $(".pageTest #resultWordsHistory").on("mouseenter", ".words .word", (e) => {
   if (resultVisible) {
     const input = $(e.currentTarget).attr("input");
-    const burst = parseInt(<string>$(e.currentTarget).attr("burst"));
+    const burst = parseInt($(e.currentTarget).attr("burst") as string);
     if (input !== undefined) {
       $(e.currentTarget).append(
         `<div class="wordInputHighlight withSpeed">
@@ -1269,9 +1702,8 @@ $(".pageTest #resultWordsHistory").on("mouseenter", ".words .word", (e) => {
             .replace(/>/g, "&gt")}
           </div>
           <div class="speed">
-          ${Math.round(
-            getTypingSpeedUnit(Config.typingSpeedUnit).fromWpm(burst)
-          )}${Config.typingSpeedUnit}
+          ${Format.typingSpeed(burst, { showDecimalPlaces: false })}
+          ${Config.typingSpeedUnit}
           </div>
           </div>`
       );
@@ -1283,11 +1715,13 @@ addEventListener("resize", () => {
   ResultWordHighlight.destroy();
 });
 
-$("#wordsInput").on("focus", () => {
+$("#wordsInput").on("focus", (e) => {
+  const wordsFocused = e.target === document.activeElement;
+  if (!wordsFocused) return;
   if (!resultVisible && Config.showOutOfFocusWarning) {
     OutOfFocus.hide();
   }
-  Caret.show();
+  Caret.show(true);
 });
 
 $("#wordsInput").on("focusout", () => {
@@ -1305,8 +1739,21 @@ $("#wordsWrapper").on("click", () => {
   focusWords();
 });
 
-$(document).on("keypress", () => {
-  if (resultVisible) {
-    skipXpBreakdown();
+ConfigEvent.subscribe((key, value) => {
+  if (key === "quickRestart") {
+    if (value === "off") {
+      $(".pageTest #restartTestButton").removeClass("hidden");
+    } else {
+      $(".pageTest #restartTestButton").addClass("hidden");
+    }
+  }
+  if (key === "maxLineWidth") {
+    updateWordsWidth();
+  }
+  if (key === "timerOpacity") {
+    updateLiveStatsOpacity(value as TimerOpacity);
+  }
+  if (key === "timerColor") {
+    updateLiveStatsColor(value as TimerColor);
   }
 });

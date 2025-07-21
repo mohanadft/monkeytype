@@ -1,14 +1,22 @@
-import { roundTo2 } from "../utils/misc";
+import { TypingSpeedUnit } from "@monkeytype/contracts/schemas/configs";
 
-class Unit implements MonkeyTypes.TypingSpeedUnitSettings {
-  unit: MonkeyTypes.TypingSpeedUnit;
+type TypingSpeedUnitSettings = {
+  fromWpm: (number: number) => number;
+  toWpm: (number: number) => number;
+  fullUnitString: string;
+  histogramDataBucketSize: number;
+  historyStepSize: number;
+};
+
+class Unit implements TypingSpeedUnitSettings {
+  unit: TypingSpeedUnit;
   convertFactor: number;
   fullUnitString: string;
   histogramDataBucketSize: number;
   historyStepSize: number;
 
   constructor(
-    unit: MonkeyTypes.TypingSpeedUnit,
+    unit: TypingSpeedUnit,
     convertFactor: number,
     fullUnitString: string,
     histogramDataBucketSize: number,
@@ -28,13 +36,9 @@ class Unit implements MonkeyTypes.TypingSpeedUnitSettings {
   toWpm(val: number): number {
     return val / this.convertFactor;
   }
-
-  convertWithUnitSuffix(wpm: number): string {
-    return roundTo2(this.fromWpm(wpm)).toFixed(2) + " " + this.unit;
-  }
 }
 
-const typingSpeedUnits: Record<MonkeyTypes.TypingSpeedUnit, Unit> = {
+const typingSpeedUnits: Record<TypingSpeedUnit, Unit> = {
   wpm: new Unit("wpm", 1, "Words per Minute", 10, 10),
   cpm: new Unit("cpm", 5, "Characters per Minute", 50, 100),
   wps: new Unit("wps", 1 / 60, "Words per Second", 0.5, 2),
@@ -42,8 +46,6 @@ const typingSpeedUnits: Record<MonkeyTypes.TypingSpeedUnit, Unit> = {
   wph: new Unit("wph", 60, "Words per Hour", 250, 1000),
 };
 
-export function get(
-  unit: MonkeyTypes.TypingSpeedUnit
-): MonkeyTypes.TypingSpeedUnitSettings {
+export function get(unit: TypingSpeedUnit): TypingSpeedUnitSettings {
   return typingSpeedUnits[unit];
 }

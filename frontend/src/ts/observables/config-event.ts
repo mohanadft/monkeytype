@@ -1,9 +1,23 @@
+import {
+  Config,
+  ConfigKey,
+  ConfigValue,
+} from "@monkeytype/contracts/schemas/configs";
+
+export type ConfigEventKey =
+  | ConfigKey
+  | "saveToLocalStorage"
+  | "setThemes"
+  | "configApplied"
+  | "fullConfigChange"
+  | "fullConfigChangeFinished";
+
 type SubscribeFunction = (
-  key: string,
-  newValue?: MonkeyTypes.ConfigValues,
+  key: ConfigEventKey,
+  newValue?: ConfigValue,
   nosave?: boolean,
-  previousValue?: MonkeyTypes.ConfigValues,
-  fullConfig?: MonkeyTypes.Config
+  previousValue?: ConfigValue,
+  fullConfig?: Config
 ) => void;
 
 const subscribers: SubscribeFunction[] = [];
@@ -13,11 +27,11 @@ export function subscribe(fn: SubscribeFunction): void {
 }
 
 export function dispatch(
-  key: string,
-  newValue?: MonkeyTypes.ConfigValues,
+  key: ConfigEventKey,
+  newValue?: ConfigValue,
   nosave?: boolean,
-  previousValue?: MonkeyTypes.ConfigValues,
-  fullConfig?: MonkeyTypes.Config
+  previousValue?: ConfigValue,
+  fullConfig?: Config
 ): void {
   subscribers.forEach((fn) => {
     try {

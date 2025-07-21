@@ -1,19 +1,25 @@
 import * as UpdateConfig from "../../config";
-import * as TestLogic from "../../test/test-logic";
-import { capitalizeFirstLetterOfEachWord } from "../../utils/misc";
+import { LanguageList } from "../../constants/languages";
+import {
+  capitalizeFirstLetterOfEachWord,
+  getLanguageDisplayString,
+} from "../../utils/strings";
+import { Command, CommandsSubgroup } from "../types";
 
-const subgroup: MonkeyTypes.CommandsSubgroup = {
+const subgroup: CommandsSubgroup = {
   title: "Language...",
   configKey: "language",
-  list: [
-    {
-      id: "couldnotload",
-      display: "Could not load the languages list :(",
+  list: LanguageList.map((language) => ({
+    id: "changeLanguage" + capitalizeFirstLetterOfEachWord(language),
+    display: getLanguageDisplayString(language),
+    configValue: language,
+    exec: (): void => {
+      UpdateConfig.setLanguage(language);
     },
-  ],
+  })),
 };
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changeLanguage",
     display: "Language...",
@@ -22,20 +28,4 @@ const commands: MonkeyTypes.Command[] = [
   },
 ];
 
-function update(languages: string[]): void {
-  subgroup.list = [];
-  languages.forEach((language) => {
-    subgroup.list.push({
-      id: "changeLanguage" + capitalizeFirstLetterOfEachWord(language),
-      display: language.replace(/_/g, " "),
-      configValue: language,
-      exec: (): void => {
-        UpdateConfig.setLanguage(language);
-        TestLogic.restart();
-      },
-    });
-  });
-}
-
 export default commands;
-export { update };

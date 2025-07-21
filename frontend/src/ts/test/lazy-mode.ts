@@ -1,22 +1,23 @@
-const accents: [string, string][] = [
+const accents: Accents = [
   ["áàâäåãąą́āą̄ă", "a"],
   ["éèêëẽęę́ēę̄ėě", "e"],
   ["íìîïĩįį́īį̄ı", "i"],
   ["óòôöøõóōǫǫ́ǭő", "o"],
   ["úùûüŭũúūůű", "u"],
-  ["ńňñ", "n"],
+  ["ńň", "n"],
   ["çĉčć", "c"],
-  ["řŕ", "r"],
-  ["ďđ", "d"],
-  ["ťț", "t"],
+  ["řŕṛ", "r"],
+  ["ďđḍ", "d"],
+  ["ťțṭ", "t"],
+  ["ṃ", "m"],
   ["æ", "ae"],
   ["œ", "oe"],
   ["ẅŵ", "w"],
   ["ĝğg̃", "g"],
   ["ĥ", "h"],
   ["ĵ", "j"],
-  ["ń", "n"],
-  ["ŝśšșş", "s"],
+  ["ńṇṅ", "n"],
+  ["ŝśšșşṣ", "s"],
   ["ß", "ss"],
   ["żźž", "z"],
   ["ÿỹýÿŷ", "y"],
@@ -38,38 +39,61 @@ const accents: [string, string][] = [
   ["ό", "ο"],
   ["ή", "η"],
   ["ώ", "ω"],
+  ["þ", "th"],
 ];
+
+const accentsMap = new Map<string, string>(
+  accents.flatMap((rule) => [...rule[0]].map((accent) => [accent, rule[1]]))
+);
+
+export type Accents = [string, string][];
+
+function findAccent(
+  wordSlice: string,
+  additionalAccents?: Accents
+): [string, string] | undefined {
+  const lookup = wordSlice.toLowerCase();
+
+  const found = additionalAccents?.find((rule) => lookup.startsWith(rule[0]));
+
+  const common = accentsMap.get(lookup[0] as string);
+
+  const commonFound =
+    common !== undefined
+      ? ([lookup[0], common] as [string, string])
+      : undefined;
+
+  return found !== undefined ? found : commonFound;
+}
 
 export function replaceAccents(
   word: string,
-  accentsOverride?: MonkeyTypes.Accents
+  additionalAccents?: Accents
 ): string {
   if (!word) return word;
-
-  const accentsArray = accentsOverride || accents;
   const uppercased = word.toUpperCase();
-  const cases = Array(word.length);
+  const cases = [...word].map((it, i) => it === uppercased[i]);
   const newWordArray: string[] = [];
 
+  let offset = 0;
   for (let i = 0; i < word.length; i++) {
-    const char = word[i];
-    const uppercasedChar = uppercased[i];
-    cases[i] = char === uppercasedChar ? 1 : 0;
-    const accent = accentsArray.find((accent) =>
-      accent[0].includes(char.toLowerCase())
-    );
-    if (accent) {
-      newWordArray.push(accent[1]);
-    } else {
-      newWordArray.push(char);
-    }
-  }
+    const index = i + offset;
+    if (index >= word.length) break;
+    const wordSlice = word.slice(index);
+    const caseSlice = cases.slice(index);
+    const accent = findAccent(wordSlice, additionalAccents);
 
-  if (cases.includes(1)) {
-    for (let i = 0; i < cases.length; i++) {
-      if (cases[i] === 1) {
-        newWordArray[i] = newWordArray[i].toUpperCase();
+    if (accent !== undefined) {
+      for (let j = 0; j < accent[1].length; j++) {
+        const char = accent[1][j] as string;
+        const isUpperCase = caseSlice[j] ?? false;
+        newWordArray.push(isUpperCase ? char.toUpperCase() : char);
       }
+      offset += accent[0].length - 1;
+    } else {
+      const char = word[index] as string;
+      const isUpperCase = cases[index];
+      newWordArray.push(isUpperCase ? char.toUpperCase() : char);
     }
   }
 

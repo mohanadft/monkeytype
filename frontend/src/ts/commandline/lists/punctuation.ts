@@ -1,13 +1,14 @@
 import * as UpdateConfig from "../../config";
 import * as TestLogic from "../../test/test-logic";
+import { Command } from "../types";
 
-const commands: MonkeyTypes.Command[] = [
+const commands: Command[] = [
   {
     id: "changePunctuation",
     display: "Punctuation...",
     icon: "fa-at",
     subgroup: {
-      title: "Change punctuation...",
+      title: "Punctuation...",
       configKey: "punctuation",
       list: [
         {

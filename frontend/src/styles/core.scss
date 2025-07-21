@@ -28,6 +28,9 @@
     var(--caret-color) 20%,
     transparent
   );
+
+  --balloon-font-size: 1rem;
+  --balloon-border-radius: calc(var(--roundness) / 2);
 }
 
 ::placeholder {
@@ -42,21 +45,79 @@
 }
 
 #app {
+  min-height: 100vh;
+  grid-template-rows: [top-start] auto [content-start] 1fr [content-end] auto [top-end];
+  overflow: hidden;
+  row-gap: 2rem;
+  padding-top: 2rem;
+  padding-bottom: 2rem;
+  width: 100%;
+}
+
+// from an amazing guide by Kevin Powell https://www.youtube.com/watch?v=c13gpBrnGEw
+.content-grid {
+  --padding-inline: 2rem;
+  --content-max-width: 1536px;
+
+  --breakout-size: calc(
+    (calc(var(--content-max-width) + 12rem) - var(--content-max-width)) / 2
+  );
+
+  justify-content: center;
   display: grid;
-  grid-template-columns: auto minmax(0, 1000px) auto;
-  justify-items: center;
-  &.wide125 {
-    grid-template-columns: auto minmax(0, 1250px) auto;
-  }
-  &.wide150 {
-    grid-template-columns: auto minmax(0, 1500px) auto;
-  }
-  &.wide200 {
-    grid-template-columns: auto minmax(0, 2000px) auto;
-  }
-  &.widemax {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
+  grid-template-columns:
+    [full-width-start]
+    var(--padding-inline)
+    [full-width-padding-start]
+    minmax(0, 1fr)
+    [breakout-start]
+    minmax(0, var(--breakout-size))
+    [content-start]
+    min(100% - (var(--padding-inline) * 2), var(--content-max-width))
+    [content-end]
+    minmax(0, var(--breakout-size))
+    [breakout-end]
+    minmax(0, 1fr)
+    [full-width-padding-end]
+    var(--padding-inline)
+    [full-width-end];
+}
+
+.content-grid > :not(.breakout, .full-width, .full-width-padding) {
+  grid-column: content;
+}
+
+.content-grid > .breakout {
+  grid-column: breakout;
+}
+
+.content-grid > .full-width {
+  grid-column: full-width;
+}
+
+.content-grid > .full-width-padding {
+  grid-column: full-width-padding;
+}
+
+#ad-vertical-left-wrapper,
+#ad-vertical-right-wrapper {
+  grid-row: content;
+  margin-right: 2rem;
+  position: fixed;
+}
+
+#ad-vertical-left-wrapper {
+  grid-column: full-width-start/content-start;
+  left: 0;
+}
+
+#ad-vertical-right-wrapper {
+  grid-column: content-end/full-width-end;
+  right: -2rem;
+}
+
+main {
+  display: grid; //stupid fix for stupid safari
 }
 
 #nocss {
@@ -85,8 +146,8 @@ a {
   }
   &:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 0.1em var(--bg-color), 0 0 0 0.2em var(--text-color);
-    border-radius: var(--roundness);
+    box-shadow: 0 0 0 0.1rem var(--bg-color), 0 0 0 0.2rem var(--text-color);
+    border-radius: calc(var(--roundness) / 2);
   }
 }
 
@@ -128,51 +189,17 @@ body {
   z-index: 9999;
 }
 
-#contentWrapper {
-  max-width: 1000px;
-  // min-width: 500px;
-  // margin: 0 auto;
-  display: grid;
-  grid-auto-flow: row;
-  min-height: 100vh;
-  padding-left: 2rem;
-  padding-right: 2rem;
-  padding-top: 2rem;
-  padding-bottom: 2rem;
-  gap: 2rem;
-  align-items: center;
-  z-index: 999;
-  grid-template-rows: auto 1fr auto;
-  width: 100%;
-  transition: padding-top 0.125s;
-  &.wide125 {
-    max-width: 1250px;
-  }
-  &.wide150 {
-    max-width: 1500px;
-  }
-  &.wide200 {
-    max-width: 2000px;
-  }
-  &.widemax {
-    max-width: unset;
-  }
-}
-
-main {
-  display: grid; //stupid fix for stupid safari
-}
-
 key {
   color: var(--bg-color);
   background-color: var(--sub-color);
   /* font-weight: bold; */
   padding: 0.1rem 0.3rem;
-  margin: 0rem 0.5rem;
+  margin: 0rem 0rem;
   border-radius: 0.1rem;
   display: inline-block;
   font-size: 0.7rem;
   line-height: 0.7rem;
+  margin: 0 0.5em;
 }
 
 .pageLoading {
@@ -188,6 +215,7 @@ key {
     justify-self: center;
     display: grid;
     .barWrapper {
+      justify-content: center;
       display: grid;
       gap: 1rem;
       grid-row: 1;
@@ -255,26 +283,37 @@ key {
 .invisible {
   opacity: 0 !important;
   pointer-events: none !important;
+  visibility: hidden !important;
 }
 
-.scrollToTopButton {
-  bottom: 4rem;
-  right: 2rem;
+.scrollToTopContainer {
   position: fixed;
-  font-size: 2rem;
-  width: 4rem;
-  height: 4rem;
-  text-align: center;
-  line-height: 4rem;
-  background: var(--sub-alt-color);
-  border-radius: 99rem;
-  z-index: 99;
-  cursor: pointer;
-  color: var(--sub-color);
-  transition: 0.25s;
-  &:hover {
-    background: var(--text-color);
-    color: var(--bg-color);
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 99999999;
+
+  .scrollToTopButton {
+    pointer-events: all;
+    place-self: end end;
+    margin-bottom: 2rem;
+    font-size: 2rem;
+    width: 4rem;
+    height: 4rem;
+    text-align: center;
+
+    line-height: 4rem;
+    background: var(--sub-alt-color);
+    border-radius: 99rem;
+    outline: 0.5rem solid var(--bg-color);
+
+    cursor: pointer;
+    color: var(--sub-color);
+    transition: 0.25s;
+    &:hover {
+      background: var(--text-color);
+      color: var(--bg-color);
+    }
   }
 }
 
@@ -312,27 +351,55 @@ key {
   }
 }
 
-.configureAPI.button {
+#devButtons {
   position: fixed;
   left: 0;
   top: 10rem;
   display: grid;
-  grid-auto-flow: column;
+  grid-auto-flow: row;
   gap: 0.5rem;
   text-decoration: none;
   z-index: 999999999;
   border-radius: 0 1rem 1rem 0;
-  padding: 1rem;
+
+  .button {
+    padding: 1rem;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
 }
 
 .avatar {
+  --size: 1em;
+
   transition: opacity 0.125s, filter 0.125s, webkit-filter 0.125s;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 100%;
-  background-position: center center;
-  background-size: contain;
-  background-repeat: no-repeat;
+  width: var(--size);
+  height: var(--size);
+  font-size: var(--size);
+  line-height: var(--size);
+  display: grid;
+  place-content: center center;
+
+  div {
+    width: 1em;
+    height: 1em;
+    line-height: 1em;
+    font-size: var(--size);
+    border-radius: 100%;
+    background-position: center center;
+    background-size: contain;
+    background-repeat: no-repeat;
+    grid-column: 1/2;
+    grid-row: 1/2;
+    place-self: center center;
+    display: grid;
+    place-content: center center;
+  }
+
+  .loading {
+    font-size: 0.8em;
+    line-height: 0.8em;
+  }
 }
 
 .badge {
@@ -345,16 +412,18 @@ key {
   display: grid;
   grid-template-columns: max-content auto;
   align-items: baseline;
+  --spacing: 0.5em;
+  --horizontalScale: 1.25;
   .fas,
   .far {
-    margin-right: 0.3rem;
-    margin-left: 0.3rem;
-    margin-top: 0.3rem;
-    margin-bottom: 0.3rem;
+    margin-right: calc(var(--spacing) * var(--horizontalScale));
+    margin-left: calc(var(--spacing) * var(--horizontalScale));
+    margin-top: var(--spacing);
+    margin-bottom: var(--spacing);
     font-size: 0.9em;
   }
   .text {
-    margin-right: 0.3rem;
+    margin-right: calc(var(--spacing) * var(--horizontalScale));
   }
 }
 
@@ -384,9 +453,16 @@ key {
   text-align: center;
   z-index: 999999999;
   &.main {
-    color: rgb(30, 255, 0);
+    color: var(--text-color);
   }
   &.error {
-    color: red;
+    color: var(--error-color);
   }
+}
+
+// mouseover texts
+[aria-label][data-balloon-pos]:after {
+  font-family: var(--font);
+  font-size: var(--balloon-font-size);
+  line-height: var(--balloon-font-size);
 }

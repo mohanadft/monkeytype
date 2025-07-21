@@ -1,14 +1,20 @@
-import * as Misc from "../utils/misc";
+import * as JSONData from "../utils/json-data";
 import Config from "../config";
 import * as TestInput from "./test-input";
 import * as SlowTimer from "../states/slow-timer";
 import * as TestState from "../test/test-state";
+import * as TestWords from "./test-words";
+import { prefersReducedMotion } from "../utils/misc";
+import { convertRemToPixels } from "../utils/numbers";
+import { splitIntoCharacters } from "../utils/strings";
+import { safeNumber } from "@monkeytype/util/numbers";
+import { subscribe } from "../observables/config-event";
 
 export let caretAnimating = true;
 const caret = document.querySelector("#caret") as HTMLElement;
 
 export function stopAnimation(): void {
-  if (caretAnimating === true) {
+  if (caretAnimating) {
     caret.style.animationName = "none";
     caret.style.opacity = "1";
     caretAnimating = false;
@@ -16,7 +22,7 @@ export function stopAnimation(): void {
 }
 
 export function startAnimation(): void {
-  if (caretAnimating === false) {
+  if (!caretAnimating) {
     if (Config.smoothCaret !== "off" && !SlowTimer.get()) {
       caret.style.animationName = "caretFlashSmooth";
     } else {
@@ -30,114 +36,219 @@ export function hide(): void {
   caret.classList.add("hidden");
 }
 
-export async function updatePosition(): Promise<void> {
-  const caretWidth = Math.round(
-    document.querySelector("#caret")?.getBoundingClientRect().width ?? 0
+function getSpaceWidth(wordElement?: HTMLElement): number {
+  if (!wordElement) {
+    const el = document.querySelector<HTMLElement>("#words .word");
+    if (el) {
+      wordElement = el;
+    } else {
+      return 0;
+    }
+  }
+  const wordComputedStyle = window.getComputedStyle(wordElement);
+  return (
+    parseInt(wordComputedStyle.marginRight) +
+    parseInt(wordComputedStyle.marginLeft)
   );
+}
+
+function getTargetPositionLeft(
+  fullWidthCaret: boolean,
+  isLanguageRightToLeft: boolean,
+  activeWordElement: HTMLElement,
+  currentWordNodeList: NodeListOf<HTMLElement>,
+  fullWidthCaretWidth: number,
+  wordLen: number,
+  inputLen: number
+): number {
+  const invisibleExtraLetters = Config.blindMode || Config.hideExtraLetters;
+  let result = 0;
+
+  if (Config.tapeMode === "off") {
+    let positionOffsetToWord = 0;
+
+    const currentLetter = currentWordNodeList[inputLen];
+    const lastWordLetter = currentWordNodeList[wordLen - 1];
+    const lastInputLetter = currentWordNodeList[inputLen - 1];
+
+    if (isLanguageRightToLeft) {
+      if (inputLen <= wordLen && currentLetter) {
+        // at word beginning in zen mode both lengths are 0, but currentLetter is defined "_"
+        positionOffsetToWord =
+          currentLetter.offsetLeft + (fullWidthCaret ? 0 : fullWidthCaretWidth);
+      } else if (!invisibleExtraLetters) {
+        positionOffsetToWord =
+          (lastInputLetter?.offsetLeft ?? 0) -
+          (fullWidthCaret ? fullWidthCaretWidth : 0);
+      } else {
+        positionOffsetToWord =
+          (lastWordLetter?.offsetLeft ?? 0) -
+          (fullWidthCaret ? fullWidthCaretWidth : 0);
+      }
+    } else {
+      if (inputLen < wordLen && currentLetter) {
+        positionOffsetToWord = currentLetter.offsetLeft;
+      } else if (!invisibleExtraLetters) {
+        positionOffsetToWord =
+          (lastInputLetter?.offsetLeft ?? 0) +
+          (lastInputLetter?.offsetWidth ?? 0);
+      } else {
+        positionOffsetToWord =
+          (lastWordLetter?.offsetLeft ?? 0) +
+          (lastWordLetter?.offsetWidth ?? 0);
+      }
+    }
+    result = activeWordElement.offsetLeft + positionOffsetToWord;
+  } else {
+    const wordsWrapperWidth =
+      $(document.querySelector("#wordsWrapper") as HTMLElement).width() ?? 0;
+    const tapeMargin =
+      wordsWrapperWidth *
+      (isLanguageRightToLeft
+        ? 1 - Config.tapeMargin / 100
+        : Config.tapeMargin / 100);
+
+    result =
+      tapeMargin -
+      (fullWidthCaret && isLanguageRightToLeft ? fullWidthCaretWidth : 0);
+
+    if (Config.tapeMode === "word" && inputLen > 0) {
+      let currentWordWidth = 0;
+      let lastPositiveLetterWidth = 0;
+      for (let i = 0; i < inputLen; i++) {
+        if (invisibleExtraLetters && i >= wordLen) break;
+        const letterOuterWidth =
+          $(currentWordNodeList[i] as Element).outerWidth(true) ?? 0;
+        currentWordWidth += letterOuterWidth;
+        if (letterOuterWidth > 0) lastPositiveLetterWidth = letterOuterWidth;
+      }
+      // if current letter has zero width move the caret to previous positive width letter
+      if ($(currentWordNodeList[inputLen] as Element).outerWidth(true) === 0)
+        currentWordWidth -= lastPositiveLetterWidth;
+      if (isLanguageRightToLeft) currentWordWidth *= -1;
+      result += currentWordWidth;
+    }
+  }
+
+  return result;
+}
+
+function getLetterWidth(
+  currentLetter: HTMLElement | undefined,
+  activeWordEl: HTMLElement,
+  wordLength: number,
+  inputLength: number,
+  currentWordNodeList: NodeListOf<HTMLElement>
+): number {
+  let letterWidth = currentLetter?.offsetWidth;
+  if (letterWidth === undefined || wordLength === 0) {
+    // at word beginning in zen mode current letter is defined "_" but wordLen is 0
+    letterWidth = getSpaceWidth(activeWordEl);
+  } else if (letterWidth === 0) {
+    // current letter is a zero-width character e.g, diacritics)
+    for (let i = inputLength; i >= 0; i--) {
+      letterWidth = (currentWordNodeList[i] as HTMLElement)?.offsetWidth;
+      if (letterWidth) break;
+    }
+  }
+  return letterWidth ?? 0;
+}
+
+export async function updatePosition(noAnim = false): Promise<void> {
+  const caretComputedStyle = window.getComputedStyle(caret);
+  const caretWidth = parseInt(caretComputedStyle.width) || 0;
+  const caretHeight = parseInt(caretComputedStyle.height) || 0;
 
   const fullWidthCaret = ["block", "outline", "underline"].includes(
     Config.caretStyle
   );
 
-  const inputLen = TestInput.input.current.length;
-  const currentLetterIndex = inputLen;
-  //insert temporary character so the caret will work in zen mode
-  const activeWordEmpty = $("#words .active").children().length === 0;
-  if (activeWordEmpty) {
-    $("#words .active").append('<letter style="opacity: 0;">_</letter>');
-  }
+  let wordLen = splitIntoCharacters(TestWords.words.getCurrent()).length;
+  const inputLen = splitIntoCharacters(TestInput.input.current).length;
+  if (Config.mode === "zen") wordLen = inputLen;
+  const activeWordEl =
+    document.querySelectorAll<HTMLElement>("#words .word")[
+      TestState.activeWordIndex - TestState.removedUIWordCount
+    ];
+  if (!activeWordEl) return;
 
-  const currentWordNodeList = document
-    ?.querySelector("#words .active")
-    ?.querySelectorAll("letter");
+  const currentWordNodeList =
+    activeWordEl.querySelectorAll<HTMLElement>("letter");
+  if (!currentWordNodeList?.length) return;
 
-  if (!currentWordNodeList) return;
+  const currentLetter = currentWordNodeList[inputLen];
+  const lastInputLetter = currentWordNodeList[inputLen - 1];
+  const lastWordLetter = currentWordNodeList[wordLen - 1];
 
-  const currentLetter: HTMLElement = currentWordNodeList[
-    currentLetterIndex
-  ] as HTMLElement;
-
-  const previousLetter: HTMLElement = currentWordNodeList[
-    Math.min(currentLetterIndex - 1, currentWordNodeList.length - 1)
-  ] as HTMLElement;
-
-  const currentLanguage = await Misc.getCurrentLanguage(Config.language);
+  const currentLanguage = await JSONData.getCurrentLanguage(Config.language);
   const isLanguageRightToLeft = currentLanguage.rightToLeft;
-  const letterPosLeft =
-    (currentLetter
-      ? currentLetter.offsetLeft
-      : previousLetter.offsetLeft + previousLetter.offsetWidth) +
-    (!isLanguageRightToLeft
-      ? 0
-      : currentLetter
-      ? currentLetter.offsetWidth
-      : -previousLetter.offsetWidth);
 
-  const letterPosTop = currentLetter
-    ? currentLetter.offsetTop
-    : previousLetter.offsetTop;
+  // in blind mode, and hide extra letters, extra letters have zero offsets
+  // offsetHeight is the same for all visible letters
+  // so is offsetTop (for same line letters)
+  const letterHeight =
+    (safeNumber(currentLetter?.offsetHeight) ?? 0) ||
+    (safeNumber(lastInputLetter?.offsetHeight) ?? 0) ||
+    (safeNumber(lastWordLetter?.offsetHeight) ?? 0) ||
+    Config.fontSize * convertRemToPixels(1);
 
-  const newTop =
-    letterPosTop - Config.fontSize * Misc.convertRemToPixels(1) * 0.1;
-  let newLeft = letterPosLeft - (fullWidthCaret ? 0 : caretWidth / 2);
-
-  const wordsWrapperWidth =
-    $(<HTMLElement>document.querySelector("#wordsWrapper")).width() ?? 0;
-
-  if (Config.tapeMode === "letter") {
-    newLeft = wordsWrapperWidth / 2 - (fullWidthCaret ? 0 : caretWidth / 2);
-  } else if (Config.tapeMode === "word") {
-    if (inputLen === 0) {
-      newLeft = wordsWrapperWidth / 2 - (fullWidthCaret ? 0 : caretWidth / 2);
-    } else {
-      let inputWidth = 0;
-      for (let i = 0; i < inputLen; i++) {
-        inputWidth += $(currentWordNodeList[i]).outerWidth(true) as number;
-      }
-      newLeft =
-        wordsWrapperWidth / 2 +
-        inputWidth -
-        (fullWidthCaret ? 0 : caretWidth / 2);
-    }
+  const letterPosTop =
+    currentLetter?.offsetTop ??
+    lastInputLetter?.offsetTop ??
+    lastWordLetter?.offsetTop ??
+    0;
+  const diff = letterHeight - caretHeight;
+  let newTop = activeWordEl.offsetTop + letterPosTop + diff / 2;
+  if (Config.caretStyle === "underline") {
+    newTop = activeWordEl.offsetTop + letterPosTop - caretHeight / 2;
   }
-  const newWidth = fullWidthCaret
-    ? ((currentLetter
-        ? currentLetter.offsetWidth
-        : previousLetter.offsetWidth) ?? 0) + "px"
-    : "";
 
-  let smoothlinescroll = $("#words .smoothScroller").height();
-  if (smoothlinescroll === undefined) smoothlinescroll = 0;
+  const letterWidth = getLetterWidth(
+    currentLetter,
+    activeWordEl,
+    wordLen,
+    inputLen,
+    currentWordNodeList
+  );
+
+  const letterPosLeft = getTargetPositionLeft(
+    fullWidthCaret,
+    isLanguageRightToLeft,
+    activeWordEl,
+    currentWordNodeList,
+    letterWidth,
+    wordLen,
+    inputLen
+  );
+  const newLeft = letterPosLeft - (fullWidthCaret ? 0 : caretWidth / 2);
 
   const jqcaret = $(caret);
 
   jqcaret.css("display", "block"); //for some goddamn reason adding width animation sets the display to none ????????
 
   const animation: { top: number; left: number; width?: string } = {
-    top: newTop - smoothlinescroll,
+    top: newTop - TestState.lineScrollDistance,
     left: newLeft,
   };
 
-  if (newWidth !== "") {
-    animation["width"] = newWidth;
-  } else {
-    jqcaret.css("width", "");
+  if (fullWidthCaret) {
+    animation.width = `${letterWidth}px`;
   }
 
   const smoothCaretSpeed =
-    Config.smoothCaret == "off"
+    Config.smoothCaret === "off"
       ? 0
-      : Config.smoothCaret == "slow"
+      : Config.smoothCaret === "slow"
       ? 150
-      : Config.smoothCaret == "medium"
+      : Config.smoothCaret === "medium"
       ? 100
-      : Config.smoothCaret == "fast"
+      : Config.smoothCaret === "fast"
       ? 85
       : 0;
 
   jqcaret
     .stop(true, false)
-    .animate(animation, !SlowTimer.get() ? smoothCaretSpeed : 0);
+    .animate(animation, SlowTimer.get() || noAnim ? 0 : smoothCaretSpeed);
 
   if (Config.showAllLines) {
     const browserHeight = window.innerHeight;
@@ -153,19 +264,21 @@ export async function updatePosition(): Promise<void> {
       window.scrollTo({
         left: 0,
         top: newscrolltop,
-        behavior: "smooth",
+        behavior: prefersReducedMotion() ? "instant" : "smooth",
       });
     }
   }
-  if (activeWordEmpty) {
-    $("#words .active").children().remove();
-  }
 }
 
-export function show(): void {
-  if ($("#result").hasClass("hidden")) {
-    caret.classList.remove("hidden");
-    updatePosition();
-    startAnimation();
+subscribe((eventKey) => {
+  if (eventKey === "caretStyle") {
+    caret.style.width = "";
+    void updatePosition(true);
   }
+});
+
+export function show(noAnim = false): void {
+  caret.classList.remove("hidden");
+  void updatePosition(noAnim);
+  startAnimation();
 }
